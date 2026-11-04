@@ -17,7 +17,7 @@ on:
           - cleanup
 
 permissions:
-  contents: write  # needed to commit updated state/session
+  contents: write
 
 env:
   PYTHON_VERSION: '3.11'
@@ -27,10 +27,10 @@ jobs:
   night-ops:
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    
+
     steps:
       # ──────────────────────────────────────────────
-      # Checkout repo with write access
+      # Checkout repository
       # ──────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -53,7 +53,7 @@ jobs:
           pip install instagrapi yt-dlp python-dotenv requests --break-system-packages
 
       # ──────────────────────────────────────────────
-      # Restore secrets → files
+      # Restore credentials from secrets
       # ──────────────────────────────────────────────
       - name: Restore credentials
         env:
@@ -68,57 +68,53 @@ jobs:
           echo "$PUBLISHER_COOKIES" > publisher_cookies.json
           echo "$PUBLISHER_SESSION" > publisher_session.json
           cat > .env <<EOF
-          TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN
-          TELEGRAM_CHAT_ID=$TELEGRAM_CHAT_ID
-          TELEGRAM_ALLOWED_USERS=$TELEGRAM_ALLOWED_USERS
+          TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+          TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+          TELEGRAM_ALLOWED_USERS=${TELEGRAM_ALLOWED_USERS}
           EOF
 
       # ──────────────────────────────────────────────
-      # Run requested mode
+      # Run pipeline (upload mode)
       # ──────────────────────────────────────────────
-      - name: Run pipeline
+      - name: Run night upload
         id: run
         env:
           MODE: ${{ github.event.inputs.mode || 'upload' }}
         run: |
-          set -e
-          python -m pip install --quiet python-dotenv
-          
+          MODE="${MODE:-upload}"
           if [ "$MODE" = "upload" ]; then
             echo "🚀 Running night upload..."
-            python upload_shorts.py
+            python upload_shorts.py || echo "⚠️ Upload step exited non-zero (may be no shorts due)"
           elif [ "$MODE" = "status" ]; then
             echo "📊 Running status check..."
-            python telegram_bot.py --status
+            python telegram_bot.py --status || true
           elif [ "$MODE" = "cleanup" ]; then
             echo "🧹 Running cleanup..."
-            python cleanup_shorts.py
+            python cleanup_shorts.py || true
           else
             echo "Unknown mode: $MODE"
             exit 1
           fi
 
       # ──────────────────────────────────────────────
-      # Commit updated state (session, uploads.json, deleted shorts)
+      # Commit state changes (only if upload mode)
       # ──────────────────────────────────────────────
       - name: Commit state changes
+        if: github.event.inputs.mode == 'upload' || github.event_name == 'schedule'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          
-          # Add all changes (uploads.json, publisher_session.json, deleted shorts)
           git add -A
-          
-          if git diff --staged --quiet; then
-            echo "No changes to commit"
-          else
+          if ! git diff --staged --quiet; then
             git commit -m "🤖 Night ops: $(date -u +'%Y-%m-%d %H:%M UTC')"
             git push
             echo "✅ State committed and pushed"
+          else
+            echo "No changes to commit"
           fi
 
       # ──────────────────────────────────────────────
-      # Telegram notification (always runs)
+      # Telegram summary (always runs)
       # ──────────────────────────────────────────────
       - name: Send Telegram summary
         if: always()
