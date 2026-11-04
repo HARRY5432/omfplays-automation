@@ -12,6 +12,8 @@ Features:
 import argparse
 import json
 import os
+import shutil
+import subprocess
 import sys
 import time
 import urllib.request
@@ -31,6 +33,8 @@ except ImportError:
     from instagrapi.exceptions import ChallengeRequired, BadPassword, ClientThrottledError
 
 IST = ZoneInfo("Asia/Kolkata")
+RETRY_DELAY_SEC = 10
+MAX_UPLOAD_RETRIES = 2
 HERE = Path(__file__).resolve().parent
 STATE_DIR = HERE / "state"
 UPLOADS_PATH = STATE_DIR / "uploads.json"
@@ -200,6 +204,31 @@ def login(challenge_code: str | None = None, expected_user: str | None = None):
     return cl
 
 
+def generate_thumbnail(video_path: Path) -> Path | None:
+    """Generate a thumbnail jpg from a video using ffmpeg."""
+    thumb_path = video_path.with_suffix(".jpg")
+    if thumb_path.exists():
+        return thumb_path
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        print("  WARNING: ffmpeg not found, cannot generate thumbnail", flush=True)
+        return None
+    try:
+        cmd = [
+            ffmpeg, "-y", "-i", str(video_path),
+            "-ss", "00:00:02", "-vframes", "1",
+            "-q:v", "2", "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920",
+            str(thumb_path),
+        ]
+        subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if thumb_path.exists():
+            print(f"  ✓ Generated thumbnail: {thumb_path.name}", flush=True)
+            return thumb_path
+    except Exception as e:
+        print(f"  WARNING: Thumbnail generation failed: {e}", flush=True)
+    return None
+
+
 def collect_shorts() -> list[dict]:
     items = []
     if not SHORTS_DIR.exists():
@@ -208,6 +237,9 @@ def collect_shorts() -> list[dict]:
         stem = v.stem
         cover = v.with_suffix(".jpg")
         caption = v.with_suffix(".txt")
+        # Generate thumbnail if missing
+        if not cover.exists():
+            cover = generate_thumbnail(v) or v.with_suffix(".jpg")
         items.append({
             "short": stem,
             "video": str(v),
@@ -305,7 +337,7 @@ def main() -> int:
             except Exception as e:
                 print(f"  Upload attempt {attempt} failed: {type(e).__name__}: {e}", flush=True)
                 if attempt < MAX_UPLOAD_RETRIES:
-                    time.sleep(RETRY_DELAY_SEC if 'RETRY_DELAY_SEC' in dir() else 10)
+                    time.sleep(RETRY_DELAY_SEC)
 
         if not success:
             send_telegram(
