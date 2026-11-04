@@ -1,77 +1,224 @@
 ﻿#!/usr/bin/env python3
+"""
+telegram_notify.py — Premium Telegram notifications for omfplays pipeline.
+
+Advanced formatting with ASCII boxes, emojis, and detailed pipeline stats.
+Used by both local pipeline (day) and GitHub Actions (night).
+"""
 import json
 import os
-import sys
 import urllib.request
 import urllib.error
-from html import escape
+from datetime import datetime
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-CONFIG_PATH = HERE / "config.json"
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
+
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 
-def load_config():
-    cfg = {}
-    if CONFIG_PATH.exists():
-        with open(CONFIG_PATH, "r", encoding="utf-8-sig") as f:
-            cfg = json.load(f)
-    cfg["telegram_bot_token"] = os.environ.get(
-        "TELEGRAM_BOT_TOKEN", cfg.get("telegram_bot_token", ""))
-    cfg["telegram_chat_id"] = os.environ.get(
-        "TELEGRAM_CHAT_ID", cfg.get("telegram_chat_id", ""))
-    return cfg
-
-
-def send_telegram(message):
-    cfg = load_config()
-    token = cfg.get("telegram_bot_token")
-    chat_id = cfg.get("telegram_chat_id")
-    if not token or token == "YOUR_BOT_TOKEN" or not chat_id or chat_id == "YOUR_CHAT_ID":
-        print("Telegram not configured; notification skipped.", file=sys.stderr)
+def _send(text: str) -> bool:
+    if not BOT_TOKEN or not CHAT_ID:
         return False
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = json.dumps({"chat_id": chat_id, "text": message, "parse_mode": "HTML"}).encode("utf-8")
-    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = json.dumps(
+        {"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML",
+         "disable_web_page_preview": True}
+    ).encode("utf-8")
     try:
-        timeout = int(cfg.get("telegram_timeout_seconds", 30))
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            result = json.loads(resp.read())
-            return result.get("ok", False)
-    except Exception as exc:
-        print(f"Telegram notification failed: {exc}", file=sys.stderr)
+        req = urllib.request.Request(url, data=payload,
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return resp.status == 200
+    except Exception:
         return False
 
 
-def notify_master_report(date_str, daily_count, downloaded, built, uploaded, batch_dir, errors=None):
+def _box(title: str, lines: list[str], icon: str = "📦") -> str:
+    """Render a styled ASCII box."""
+    width = max(len(title) + 4, max((len(l) for l in lines), default=0) + 4)
+    top = f"{icon} ┌{'─' * (width - 2)}┐"
+    mid_title = f"│ {title}{' ' * (width - len(title) - 3)}│"
+    sep = f"├{'─' * (width - 2)}┤"
+    body = "\n".join(f"│ {l}{' ' * (width - len(l) - 3)}│" for l in lines)
+    bottom = f"└{'─' * (width - 2)}┘"
+    return f"{top}\n{mid_title}\n{sep}\n{body}\n{bottom}"
+
+
+def notify_pipeline_started(raw_status: dict, date_str: str, ist_now: str) -> bool:
     lines = [
-        f"\U0001f4ca <b>Daily Pipeline Report</b>",
-        f"\U0001f4c5 {date_str}",
+        f"📅 Date: <code>{date_str}</code>",
+        f"🕐 Time: <code>{ist_now}</code> IST",
+        f"📥 Raw Total: <code>{raw_status['total']}</code>",
+        f"✅ Consumed: <code>{raw_status['consumed']}</code>",
+        f"⏳ Remaining: <code>{raw_status['remaining']}</code>",
         "",
-        f"\u2b07\ufe0f Downloaded: {downloaded} videos",
-        f"\u2702\ufe0f Shorts Built: {built} clips",
-        f"\u2b06\ufe0f Uploaded: {uploaded}/{daily_count} shorts",
-        f"\U0001f4c1 Batch: {escape(str(batch_dir))}",
+        "🔄 Pipeline: Download → Build → Meta → Upload → Push",
     ]
-    if errors:
-        lines.append("")
-        lines.append(f"\u274c Errors: {escape(str(errors))}")
-    status = "\u2705 Complete" if uploaded == daily_count and not errors else "\u26a0\ufe0f Incomplete"
-    lines.insert(1, f"Status: {status}")
-    msg = "\n".join(lines)
-    return send_telegram(msg)
+    text = _box("🚀 LOCAL PIPELINE STARTED", lines, "🌅")
+    return _send(f"<pre>{text}</pre>")
 
 
-def notify_error(step, error_msg):
-    msg = (f"\u274c <b>Pipeline Error</b>\n"
-           f"Step: {escape(str(step))}\n"
-           f"Error: {escape(str(error_msg))}")
-    return send_telegram(msg)
+def notify_raw_empty() -> bool:
+    lines = [
+        "📂 No raw clips left to process.",
+        "⬇️ Downloading new videos from channels...",
+        "",
+        "Pipeline will continue after download completes.",
+    ]
+    text = _box("⚠️ RAW EMPTY", lines, "📭")
+    return _send(f"<pre>{text}</pre>")
 
 
-if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        send_telegram(escape(" ".join(sys.argv[1:])))
-    else:
-        send_telegram("Test notification from contentfarming pipeline")
+def notify_raw_low(count: int) -> bool:
+    lines = [
+        f"Only <code>{count}</code> raw clip(s) left.",
+        "⬇️ Downloading new videos...",
+        "",
+        "Topping up raw inventory before build.",
+    ]
+    text = _box("⚠️ RAW LOW", lines, "📉")
+    return _send(f"<pre>{text}</pre>")
 
+
+def notify_short_built(short_name: str, index: int, total: int, title: str) -> bool:
+    lines = [
+        f"🎬 Short: <code>{short_name}</code>",
+        f"🔢 Sequence: <code>{index} / {total}</code>",
+        f"📝 Title: <code>{title}</code>",
+        "",
+        "✅ Ready for upload.",
+    ]
+    text = _box("🎞️ SHORT BUILT", lines, "🎬")
+    return _send(f"<pre>{text}</pre>")
+
+
+def notify_meta_generated(count: int, skipped: int) -> bool:
+    lines = [
+        f"✅ New: <code>{count}</code>",
+        f"⏭️ Skipped: <code>{skipped}</code>",
+        "",
+        "🤖 Powered by OpenRouter.",
+    ]
+    text = _box("✨ META GENERATED", lines, "✍️")
+    return _send(f"<pre>{text}</pre>")
+
+
+def notify_upload_started(total_due: int, date_str: str, ist_now: str) -> bool:
+    lines = [
+        f"📅 Date: <code>{date_str}</code>",
+        f"🕐 Time: <code>{ist_now}</code> IST",
+        f"📤 Due for upload: <code>{total_due}</code>",
+        "",
+        "☀️ Daytime upload slot.",
+    ]
+    text = _box("📤 UPLOAD STARTED", lines, "☀️")
+    return _send(f"<pre>{text}</pre>")
+
+
+def notify_short_uploaded(short_name: str, slot_time: str, slot_label: str, media_pk: str) -> bool:
+    lines = [
+        f"🎬 Short: <code>{short_name}</code>",
+        f"🕐 Slot: <code>{slot_time}</code> IST",
+        f"🏷️ Label: <code>{slot_label}</code>",
+        f"🆔 Media PK: <code>{media_pk}</code>",
+        "",
+        "✅ Published to Instagram.",
+    ]
+    text = _box("✅ SHORT UPLOADED", lines, "📱")
+    return _send(f"<pre>{text}</pre>")
+
+
+def notify_upload_complete(posted: int, remaining: int, total: int) -> bool:
+    lines = [
+        f"📤 Posted this run: <code>{posted}</code>",
+        f"⏳ Remaining for night: <code>{remaining}</code>",
+        f"📊 Total shorts: <code>{total}</code>",
+        "",
+        "🌙 Night upload will handle the rest.",
+    ]
+    text = _box("📋 UPLOAD COMPLETE", lines, "📋")
+    return _send(f"<pre>{text}</pre>")
+
+
+def notify_raw_fully_processed(shorts_count: int, daily_limit: int) -> bool:
+    lines = [
+        f"🎬 Shorts built today: <code>{shorts_count}</code>",
+        f"📊 Daily limit: <code>{daily_limit}</code>",
+        f"📂 Raw clips: <code>All consumed</code>",
+        "",
+        "☀️ Daytime upload done. Night upload handles remaining.",
+    ]
+    text = _box("✅ RAW FULLY PROCESSED", lines, "🏁")
+    return _send(f"<pre>{text}</pre>")
+
+
+def notify_upload_failed(short_name: str, error: str) -> bool:
+    lines = [
+        f"🎬 Short: <code>{short_name}</code>",
+        f"❌ Error: <code>{error}</code>",
+        "",
+        "🛑 Stopping. Progress saved in state/uploads.json.",
+        "🔄 Will retry on next run.",
+    ]
+    text = _box("🚨 UPLOAD FAILED", lines, "💥")
+    return _send(f"<pre>{text}</pre>")
+
+
+def notify_download_failed() -> bool:
+    lines = [
+        "❌ Download from channels failed.",
+        "🔍 Check logs for details.",
+        "🔄 Will retry on next scheduled run.",
+    ]
+    text = _box("💥 DOWNLOAD FAILED", lines, "⛔")
+    return _send(f"<pre>{text}</pre>")
+
+
+def notify_build_failed() -> bool:
+    lines = [
+        "❌ FFmpeg or build script error.",
+        "🔍 Check logs for details.",
+        "🔄 Will retry on next scheduled run.",
+    ]
+    text = _box("💥 BUILD FAILED", lines, "⛔")
+    return _send(f"<pre>{text}</pre>")
+
+
+def notify_fatal(message: str) -> bool:
+    lines = [
+        f"❌ {message}",
+        "",
+        "🛑 Pipeline stopped immediately.",
+    ]
+    text = _box("💀 FATAL ERROR", lines, "💀")
+    return _send(f"<pre>{text}</pre>")
+
+
+def notify_night_upload_complete(posted: int, remaining: int, total: int) -> bool:
+    lines = [
+        f"📤 Posted this run: <code>{posted}</code>",
+        f"⏳ Remaining: <code>{remaining}</code>",
+        f"📊 Total shorts: <code>{total}</code>",
+        "",
+        "🌙 Night upload complete.",
+    ]
+    text = _box("🌙 NIGHT UPLOAD COMPLETE", lines, "🌙")
+    return _send(f"<pre>{text}</pre>")
+
+
+def notify_night_upload_failed(short_name: str, error: str) -> bool:
+    lines = [
+        f"🎬 Short: <code>{short_name}</code>",
+        f"❌ Error: <code>{error}</code>",
+        "",
+        "🛑 Stopping. Progress saved.",
+        "🔄 Will retry on next night run.",
+    ]
+    text = _box("🚨 NIGHT UPLOAD FAILED", lines, "💥")
+    return _send(f"<pre>{text}</pre>")

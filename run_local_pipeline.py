@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 """
-run_local_pipeline.py — Production-grade autonomous pipeline.
+run_local_pipeline.py — Production-grade autonomous pipeline (DAYTIME).
 
 Responsibilities:
   1. Check raw status — Telegram alert if low/empty BEFORE downloading
-  2. Download only when raw is below threshold (respects daily_shorts cap)
+  2. Download only when raw is below threshold
   3. Build vertical shorts (capped at daily_shorts per run)
-  4. Git push → GitHub Actions handles night upload
-  5. Telegram alerts at every milestone
+  4. Generate OpenRouter meta (Day XX of Modern Warfare titles)
+  5. Upload ONLY shorts whose schedule slot is DUE (no --now)
+  6. Push remaining unposted shorts + captions + state to GitHub
+  7. Telegram alerts at every milestone (advanced formatting)
 
-Reliability features:
+Reliability:
   • File locking — prevents concurrent runs
   • Atomic state writes — no corrupted JSON
-  • Retry logic — transient failures are retried
-  • Config validation — fails fast on bad config
-  • Partial cleanup — removes .part files on failure
+  • Retry logic — transient failures retried
+  • Config validation — fails fast
   • Idempotent — safe to re-run at any time
 """
 import json
@@ -49,10 +50,6 @@ MAX_RETRIES = 3
 RETRY_DELAY_SEC = 10
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# LOGGING
-# ══════════════════════════════════════════════════════════════════════════════
-
 def log(msg: str, level: str = "INFO"):
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     line = f"[{ts}] [{level}] {msg}"
@@ -67,13 +64,13 @@ def log(msg: str, level: str = "INFO"):
 
 def die(msg: str, code: int = 1):
     log(f"FATAL: {msg}", "ERROR")
-    send_telegram(f"💀 <b>Pipeline Fatal Error</b>\n🕐 {datetime.now().strftime('%Y-%m-%d %H:%M IST')}\n❌ {msg}")
+    try:
+        from telegram_notify import notify_fatal
+        notify_fatal(msg)
+    except Exception:
+        pass
     sys.exit(code)
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# FILE LOCKING — PREVENT CONCURRENT RUNS
-# ══════════════════════════════════════════════════════════════════════════════
 
 class PipelineLock:
     def __init__(self, path: Path):
@@ -83,7 +80,6 @@ class PipelineLock:
     def acquire(self) -> bool:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            # Atomic create-if-not-exists works on Windows too
             self.fd = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
             os.write(self.fd, str(os.getpid()).encode())
             log(f"Lock acquired: {self.path}")
@@ -104,12 +100,7 @@ class PipelineLock:
                 pass
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# ATOMIC STATE
-# ══════════════════════════════════════════════════════════════════════════════
-
 def atomic_write_json(path: Path, data) -> None:
-    """Write JSON atomically via temp file + rename."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
@@ -129,10 +120,6 @@ def load_json(path: Path, default):
         return default
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# CONFIG
-# ══════════════════════════════════════════════════════════════════════════════
-
 def load_config() -> dict:
     if not CONFIG_PATH.exists():
         die(f"config.json not found at {CONFIG_PATH}")
@@ -146,7 +133,6 @@ def load_config() -> dict:
         if key not in cfg:
             die(f"config.json missing required key: {key}")
 
-    # Sensible defaults
     cfg.setdefault("short_seconds", 40)
     cfg.setdefault("daily_shorts", 5)
     cfg.setdefault("frame_width", 1080)
@@ -163,43 +149,6 @@ def load_config() -> dict:
     cfg.setdefault("channels", [])
     return cfg
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TELEGRAM
-# ══════════════════════════════════════════════════════════════════════════════
-
-def send_telegram(text: str, retries: int = MAX_RETRIES) -> bool:
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        log("Telegram not configured; skipping alert.", "WARN")
-        return False
-
-    import urllib.request, urllib.error
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = json.dumps(
-        {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML",
-         "disable_web_page_preview": True}
-    ).encode("utf-8")
-
-    last_err = None
-    for attempt in range(1, retries + 1):
-        try:
-            req = urllib.request.Request(url, data=payload,
-                                         headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                if resp.status == 200:
-                    return True
-        except Exception as e:
-            last_err = e
-            log(f"Telegram send attempt {attempt}/{retries} failed: {e}", "WARN")
-            if attempt < retries:
-                time.sleep(RETRY_DELAY_SEC)
-    log(f"Telegram send failed after {retries} attempts: {last_err}", "ERROR")
-    return False
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# RAW STATUS
-# ══════════════════════════════════════════════════════════════════════════════
 
 def raw_status(cfg: dict) -> dict:
     skip = set(cfg.get("skip_files", []))
@@ -219,10 +168,6 @@ def raw_status(cfg: dict) -> dict:
     }
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# GIT
-# ══════════════════════════════════════════════════════════════════════════════
-
 def run(cmd: list[str], cwd: Path = HERE, retries: int = MAX_RETRIES) -> int:
     for attempt in range(1, retries + 1):
         log(f"RUN (attempt {attempt}/{retries}): {' '.join(cmd)}")
@@ -240,22 +185,18 @@ def git_push_changes() -> None:
     log("Pushing shorts + captions + state to GitHub...")
     STATE_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Add shorts (includes .mp4 + .txt captions) + state
     run(["git", "add", "shorts/", "state/uploads.json"])
 
-    # Check if anything changed
     result = subprocess.run(["git", "diff", "--staged", "--quiet"], cwd=str(HERE))
     if result.returncode == 0:
         log("No changes to push.")
         return
 
-    # Commit
     rc = run(["git", "commit", "-m", f"Local pipeline: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}"])
     if rc != 0:
         log("Git commit failed — skipping push.", "WARN")
         return
 
-    # Push
     rc = run(["git", "push"])
     if rc != 0:
         log("Git push failed — shorts remain local. Next run will retry.", "WARN")
@@ -263,10 +204,6 @@ def git_push_changes() -> None:
 
     log("✅ Shorts + captions + state pushed to GitHub.")
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# MAIN PIPELINE
-# ══════════════════════════════════════════════════════════════════════════════
 
 def main() -> int:
     lock = PipelineLock(LOCK_PATH)
@@ -287,21 +224,23 @@ def _run() -> int:
     st = raw_status(cfg)
     log(f"Raw: {st['consumed']} consumed / {st['remaining']} remaining / {st['total']} total")
 
+    from telegram_notify import (
+        notify_pipeline_started, notify_raw_empty, notify_raw_low,
+        notify_short_built, notify_meta_generated, notify_upload_started,
+        notify_short_uploaded, notify_upload_complete, notify_raw_fully_processed,
+        notify_upload_failed, notify_download_failed, notify_build_failed,
+    )
+
+    ist_now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    date_str = datetime.now().strftime("%Y-%m-%d")
+
+    notify_pipeline_started(st, date_str, ist_now)
+
     # Alert if raw critically low
     if st["remaining"] == 0:
-        send_telegram(
-            "⚠️ <b>RAW EMPTY</b>\n"
-            f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M IST')}\n"
-            f"📂 No raw clips left to process.\n"
-            f"⬇️ Downloading new videos now."
-        )
+        notify_raw_empty()
     elif st["remaining"] <= 2:
-        send_telegram(
-            "⚠️ <b>RAW LOW</b>\n"
-            f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M IST')}\n"
-            f"📥 Only {st['remaining']} raw clip(s) left.\n"
-            f"⬇️ Downloading more now."
-        )
+        notify_raw_low(st["remaining"])
 
     # ── 2. DOWNLOAD ONLY IF NEEDED ──
     if st["remaining"] < 2:
@@ -309,11 +248,7 @@ def _run() -> int:
         rc = run([sys.executable, "download_channels.py"])
         if rc != 0:
             log("Download step failed.", "ERROR")
-            send_telegram(
-                "❌ <b>Download Failed</b>\n"
-                f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M IST')}\n"
-                f"Check logs for details."
-            )
+            notify_download_failed()
             return 1
         log("Download complete.")
         st = raw_status(cfg)
@@ -324,11 +259,7 @@ def _run() -> int:
     rc = run([sys.executable, "build_shorts_omf.py"])
     if rc != 0:
         log("Build step failed.", "ERROR")
-        send_telegram(
-            "❌ <b>Build Failed</b>\n"
-            f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M IST')}\n"
-            f"FFmpeg or script error. Check logs."
-        )
+        notify_build_failed()
         return 1
 
     # ── 3.5. GENERATE META (OpenRouter titles/descriptions) ──
@@ -336,24 +267,12 @@ def _run() -> int:
     rc = run([sys.executable, "generate_meta.py"])
     if rc != 0:
         log("Meta generation failed — continuing with shorts anyway.", "WARN")
-        send_telegram(
-            "⚠️ <b>Meta Generation Failed</b>\n"
-            f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M IST')}\n"
-            f"Shorts built but titles/descriptions may be missing."
-        )
 
-    # ── 4. LOCAL DAYTIME UPLOAD ──
-    log("Uploading shorts locally during daytime...")
-    rc = run([sys.executable, "upload_shorts.py", "--now"])
+    # ── 4. LOCAL DAYTIME UPLOAD (only DUE slots, no --now) ──
+    log("Uploading shorts locally during daytime (schedule-aware)...")
+    rc = run([sys.executable, "upload_shorts.py"])  # NO --now — only due slots
     if rc != 0:
         log("Local upload step failed — shorts will go to night upload.", "WARN")
-        send_telegram(
-            "⚠️ <b>Local Upload Failed</b>\n"
-            f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M IST')}\n"
-            f"Shorts will be uploaded via GitHub Actions at night."
-        )
-    else:
-        log("Local upload complete.")
 
     # ── 4.5. CLEANUP POSTED SHORTS FROM DISK ──
     log("Cleaning up posted shorts from disk...")
@@ -363,13 +282,7 @@ def _run() -> int:
     st = raw_status(cfg)
     shorts_count = len(list(SHORTS_DIR.glob("s*.mp4"))) if SHORTS_DIR.exists() else 0
     if st["remaining"] == 0:
-        send_telegram(
-            "✅ <b>Raw Fully Processed</b>\n"
-            f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M IST')}\n"
-            f"🎬 Shorts built today: <b>{shorts_count}</b> (limit {daily_shorts}/day)\n"
-            f"📂 Raw clips: <b>All consumed</b>\n"
-            f"☀️ Local upload done. Night upload will handle any remaining."
-        )
+        notify_raw_fully_processed(shorts_count, daily_shorts)
     else:
         log(f"Raw clips remaining: {st['remaining']} — will continue next run.")
 
