@@ -221,6 +221,16 @@ def main():
         p = manifest_path(output_dir)
         if os.path.exists(p): os.remove(p)
 
+    # --- Linear cap: daily_shorts per run ---
+    daily_limit = int(cfg.get("daily_shorts", 5))
+    existing_shorts = len(list(Path(output_dir).glob("s*.mp4"))) if not force else 0
+    remaining = daily_limit - existing_shorts
+    if remaining <= 0:
+        print(f"Already have {existing_shorts} shorts today (limit {daily_limit}). Skipping build.")
+        return
+    if max_shorts is None or max_shorts > remaining:
+        max_shorts = remaining
+
     manifest = process_pending(cfg, raw_dir, output_dir, ffmpeg, ffprobe, dry_run, force, max_shorts)
     if dry_run: print("\nDRY RUN - nothing written.")
     else: print(f"\nDone: {len(manifest)} short(s) in '{output_dir}'")
