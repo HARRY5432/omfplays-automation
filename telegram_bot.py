@@ -36,6 +36,7 @@ HERE = Path(__file__).resolve().parent
 SHORTS_DIR = HERE / "shorts"
 STATE_DIR = HERE / "state"
 UPLOADS_PATH = STATE_DIR / "uploads.json"
+MANIFEST_PATH = SHORTS_DIR / "manifest.json"
 WORKFLOW_LOGS_DIR = HERE / ".github" / "workflows"
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -93,7 +94,8 @@ def build_keyboard():
     return {
         "inline_keyboard": [
             [{"text": "📊 Status", "callback_data": "status"}, {"text": "📋 Shorts", "callback_data": "shorts"}],
-            [{"text": "🧹 Cleanup", "callback_data": "cleanup"}, {"text": "📜 Logs", "callback_data": "logs"}],
+            [{"text": "📂 Raw", "callback_data": "raw"}, {"text": "🧹 Cleanup", "callback_data": "cleanup"}],
+            [{"text": "📜 Logs", "callback_data": "logs"}],
         ]
     }
 
@@ -127,6 +129,54 @@ def shorts_text():
         lines.append(f"{icon} <code>{s['name']}</code> — {size_mb:.1f} MB — {s['status']}")
     return "\n".join(lines)
 
+
+def raw_status_text() -> str:
+    """Check raw folder vs manifest consumption."""
+    raw_dir = Path("raw")
+    if not raw_dir.exists():
+        return "📂 <b>Raw Clips Status</b>\n\nNo raw/ folder found."
+    
+    raw_exts = {".mp4", ".mov", ".mkv", ".avi", ".mxf", ".ts", ".webm", ".m4v"}
+    raw_files = [f for f in raw_dir.iterdir() if f.suffix.lower() in raw_exts]
+    
+    if not raw_files:
+        return "📂 <b>Raw Clips Status</b>\n\n✅ <b>All raw clips processed!</b>\nNo pending raw videos."
+    
+    manifest = load_json(MANIFEST_PATH, [])
+    consumed = {e.get("source") for e in manifest}
+    remaining = [f for f in raw_files if f.name not in consumed]
+    done = len(raw_files) - len(remaining)
+    
+    lines = [
+        "📂 <b>Raw Clips Status</b>",
+        f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M IST')}",
+        "",
+        f"📥 Total raw files: <b>{len(raw_files)}</b>",
+        f"✅ Processed: <b>{done}</b>",
+        f"⏳ Remaining: <b>{len(remaining)}</b>",
+        "",
+    ]
+    
+    if remaining:
+        lines.append("<b>Pending:</b>")
+        for f in remaining[:10]:
+            size_mb = f.stat().st_size / 1024 / 1024
+            lines.append(f"  ⏳ <code>{f.name}</code> ({size_mb:.1f} MB)")
+        if len(remaining) > 10:
+            lines.append(f"  ... and {len(remaining) - 10} more")
+        lines.append("")
+        lines.append("Run local pipeline to process remaining.")
+    else:
+        lines.append("✅ All clips are consumed. Ready for next download.")
+    
+    return "\n".join(lines)
+
+
+async def cmd_raw(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update.effective_user.id):
+        return
+    await update.message.reply_text(raw_status_text(), parse_mode="HTML", reply_markup=build_keyboard())
+
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update.effective_user.id):
         return
@@ -135,6 +185,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Commands:\n"
         "  /status — Pipeline overview\n"
         "  /shorts — List all shorts\n"
+        "  /raw — Check raw clips status\n"
         "  /cleanup — Delete posted shorts\n"
         "  /logs — Recent workflow runs\n"
         "  /help — This message",
@@ -190,6 +241,8 @@ async def callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(status_text(), parse_mode="HTML", reply_markup=build_keyboard())
     elif data == "shorts":
         await query.edit_message_text(shorts_text(), parse_mode="HTML", reply_markup=build_keyboard())
+    elif data == "raw":
+        await query.edit_message_text(raw_status_text(), parse_mode="HTML", reply_markup=build_keyboard())
     elif data == "cleanup":
         await query.edit_message_text("🧹 Running cleanup...", parse_mode="HTML")
         try:
@@ -221,6 +274,7 @@ def run_daemon():
     app.add_handler(CommandHandler("help", cmd_start))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("shorts", cmd_shorts))
+    app.add_handler(CommandHandler("raw", cmd_raw))
     app.add_handler(CommandHandler("cleanup", cmd_cleanup))
     app.add_handler(CommandHandler("logs", cmd_logs))
     app.add_handler(CallbackQueryHandler(callback_query))
