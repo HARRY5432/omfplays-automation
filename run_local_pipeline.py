@@ -17,7 +17,6 @@ Reliability features:
   • Partial cleanup — removes .part files on failure
   • Idempotent — safe to re-run at any time
 """
-import fcntl
 import json
 import os
 import shutil
@@ -87,21 +86,19 @@ class PipelineLock:
     def acquire(self) -> bool:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.fd = open(self.path, "w")
-            fcntl.flock(self.fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            self.fd.write(str(os.getpid()))
-            self.fd.flush()
+            # Atomic create-if-not-exists works on Windows too
+            self.fd = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
+            os.write(self.fd, str(os.getpid()).encode())
             log(f"Lock acquired: {self.path}")
             return True
-        except (IOError, OSError):
+        except FileExistsError:
             log("Another pipeline instance is running. Exiting.")
             return False
 
     def release(self):
-        if self.fd:
+        if self.fd is not None:
             try:
-                fcntl.flock(self.fd.fileno(), fcntl.LOCK_UN)
-                self.fd.close()
+                os.close(self.fd)
             except Exception:
                 pass
             try:
