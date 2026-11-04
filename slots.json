@@ -2,24 +2,24 @@
   "timezone": "Asia/Kolkata",
   "slots": [
     {
-      "time": "06:07",
-      "label": "Morning peak"
+      "time": "19:30",
+      "label": "US East Lunch + EU Afternoon"
     },
     {
-      "time": "10:30",
-      "label": "Mid-morning"
+      "time": "22:30",
+      "label": "US East Prime Evening + EU Night"
     },
     {
-      "time": "14:00",
-      "label": "Afternoon"
+      "time": "01:00",
+      "label": "US East Late Night + AU Morning"
     },
     {
-      "time": "18:30",
-      "label": "Evening peak"
+      "time": "05:00",
+      "label": "US East Early Morning + Asia Start"
     },
     {
-      "time": "21:00",
-      "label": "Night"
+      "time": "08:30",
+      "label": "US East Morning + India Night"
     }
   ]
 }
