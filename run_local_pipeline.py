@@ -325,7 +325,24 @@ def _run() -> int:
             f"Shorts built but titles/descriptions may be missing."
         )
 
-    # ── 4. RAW DONE ALERT ──
+    # ── 4. LOCAL DAYTIME UPLOAD ──
+    log("Uploading shorts locally during daytime...")
+    rc = run([sys.executable, "upload_shorts.py", "--now"])
+    if rc != 0:
+        log("Local upload step failed — shorts will go to night upload.", "WARN")
+        send_telegram(
+            "⚠️ <b>Local Upload Failed</b>\n"
+            f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M IST')}\n"
+            f"Shorts will be uploaded via GitHub Actions at night."
+        )
+    else:
+        log("Local upload complete.")
+
+    # ── 4.5. CLEANUP POSTED SHORTS FROM DISK ──
+    log("Cleaning up posted shorts from disk...")
+    run([sys.executable, "cleanup_shorts.py"])
+
+    # ── 5. RAW DONE ALERT ──
     st = raw_status(cfg)
     shorts_count = len(list(SHORTS_DIR.glob("s*.mp4"))) if SHORTS_DIR.exists() else 0
     if st["remaining"] == 0:
@@ -334,12 +351,12 @@ def _run() -> int:
             f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M IST')}\n"
             f"🎬 Shorts built today: <b>{shorts_count}</b> (limit {daily_shorts}/day)\n"
             f"📂 Raw clips: <b>All consumed</b>\n"
-            f"🌙 Night upload will publish via GitHub Actions."
+            f"☀️ Local upload done. Night upload will handle any remaining."
         )
     else:
         log(f"Raw clips remaining: {st['remaining']} — will continue next run.")
 
-    # ── 5. PUSH TO GITHUB ──
+    # ── 6. PUSH REMAINING UNPOSTED SHORTS TO GITHUB (night backup) ──
     git_push_changes()
 
     log("=== Local Pipeline Finished ===")
