@@ -1,8 +1,32 @@
 [
   {
-    "short": "s021.mp4",
-    "source": "Call of Duty MW (PS5) Special Forces Night Vision Combat \u2013 Immersive Gameplay 4K_WeryFFtQ6pE.mp4",
+    "short": "s001.mp4",
+    "source": "Call of Duty MW (PS5) Special Forces Night Vision Combat – Immersive Gameplay 4K_WeryFFtQ6pE.mp4",
     "start": 0.0,
+    "duration": 40.0
+  },
+  {
+    "short": "s002.mp4",
+    "source": "Call of Duty MW (PS5) Special Forces Night Vision Combat – Immersive Gameplay 4K_WeryFFtQ6pE.mp4",
+    "start": 40.0,
+    "duration": 40.0
+  },
+  {
+    "short": "s003.mp4",
+    "source": "Call of Duty MW (PS5) Special Forces Night Vision Combat – Immersive Gameplay 4K_WeryFFtQ6pE.mp4",
+    "start": 80.0,
+    "duration": 40.0
+  },
+  {
+    "short": "s004.mp4",
+    "source": "Call of Duty MW (PS5) Special Forces Night Vision Combat – Immersive Gameplay 4K_WeryFFtQ6pE.mp4",
+    "start": 120.0,
+    "duration": 40.0
+  },
+  {
+    "short": "s005.mp4",
+    "source": "Call of Duty MW (PS5) Special Forces Night Vision Combat – Immersive Gameplay 4K_WeryFFtQ6pE.mp4",
+    "start": 160.0,
     "duration": 40.0
   }
 ]

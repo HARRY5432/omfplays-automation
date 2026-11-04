@@ -19,12 +19,9 @@ Reliability features:
 """
 import json
 import os
-import shutil
 import subprocess
 import sys
-import tempfile
 import time
-import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -316,6 +313,17 @@ def _run() -> int:
             f"FFmpeg or script error. Check logs."
         )
         return 1
+
+    # ── 3.5. GENERATE META (OpenRouter titles/descriptions) ──
+    log("Generating titles/descriptions via OpenRouter...")
+    rc = run([sys.executable, "generate_meta.py"])
+    if rc != 0:
+        log("Meta generation failed — continuing with shorts anyway.", "WARN")
+        send_telegram(
+            "⚠️ <b>Meta Generation Failed</b>\n"
+            f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M IST')}\n"
+            f"Shorts built but titles/descriptions may be missing."
+        )
 
     # ── 4. RAW DONE ALERT ──
     st = raw_status(cfg)
