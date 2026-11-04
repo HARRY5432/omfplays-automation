@@ -1,0 +1,154 @@
+name: Night Upload & Ops
+
+on:
+  schedule:
+    # 9pm-9am IST = UTC 15:30-15:30, every 30 min
+    - cron: '*/30 15-23,0-15 * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run mode'
+        required: false
+        default: 'upload'
+        type: choice
+        options:
+          - upload
+          - status
+          - cleanup
+
+permissions:
+  contents: write  # needed to commit updated state/session
+
+env:
+  PYTHON_VERSION: '3.11'
+  TZ: 'Asia/Kolkata'
+
+jobs:
+  night-ops:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    
+    steps:
+      # ──────────────────────────────────────────────
+      # Checkout repo with write access
+      # ──────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
+          fetch-depth: 0
+
+      # ──────────────────────────────────────────────
+      # Setup Python + deps
+      # ──────────────────────────────────────────────
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install instagrapi yt-dlp python-dotenv requests --break-system-packages
+
+      # ──────────────────────────────────────────────
+      # Restore secrets → files
+      # ──────────────────────────────────────────────
+      - name: Restore credentials
+        env:
+          PUBLISHER_AUTH: ${{ secrets.PUBLISHER_AUTH }}
+          PUBLISHER_COOKIES: ${{ secrets.PUBLISHER_COOKIES }}
+          PUBLISHER_SESSION: ${{ secrets.PUBLISHER_SESSION }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_ALLOWED_USERS: ${{ secrets.TELEGRAM_ALLOWED_USERS }}
+        run: |
+          echo "$PUBLISHER_AUTH" > publisher_auth.json
+          echo "$PUBLISHER_COOKIES" > publisher_cookies.json
+          echo "$PUBLISHER_SESSION" > publisher_session.json
+          cat > .env <<EOF
+          TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN
+          TELEGRAM_CHAT_ID=$TELEGRAM_CHAT_ID
+          TELEGRAM_ALLOWED_USERS=$TELEGRAM_ALLOWED_USERS
+          EOF
+
+      # ──────────────────────────────────────────────
+      # Run requested mode
+      # ──────────────────────────────────────────────
+      - name: Run pipeline
+        id: run
+        env:
+          MODE: ${{ github.event.inputs.mode || 'upload' }}
+        run: |
+          set -e
+          python -m pip install --quiet python-dotenv
+          
+          if [ "$MODE" = "upload" ]; then
+            echo "🚀 Running night upload..."
+            python upload_shorts.py
+          elif [ "$MODE" = "status" ]; then
+            echo "📊 Running status check..."
+            python telegram_bot.py --status
+          elif [ "$MODE" = "cleanup" ]; then
+            echo "🧹 Running cleanup..."
+            python cleanup_shorts.py
+          else
+            echo "Unknown mode: $MODE"
+            exit 1
+          fi
+
+      # ──────────────────────────────────────────────
+      # Commit updated state (session, uploads.json, deleted shorts)
+      # ──────────────────────────────────────────────
+      - name: Commit state changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          
+          # Add all changes (uploads.json, publisher_session.json, deleted shorts)
+          git add -A
+          
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "🤖 Night ops: $(date -u +'%Y-%m-%d %H:%M UTC')"
+            git push
+            echo "✅ State committed and pushed"
+          fi
+
+      # ──────────────────────────────────────────────
+      # Telegram notification (always runs)
+      # ──────────────────────────────────────────────
+      - name: Send Telegram summary
+        if: always()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          MODE: ${{ github.event.inputs.mode || 'upload' }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          python -c "
+import os, json, requests, sys
+from datetime import datetime
+
+token = os.getenv('TELEGRAM_BOT_TOKEN')
+chat = os.getenv('TELEGRAM_CHAT_ID')
+mode = os.getenv('MODE', 'upload')
+status = os.getenv('JOB_STATUS', 'unknown')
+
+if not token or not chat:
+    print('Telegram not configured')
+    sys.exit(0)
+
+icon = {'success': '✅', 'failure': '❌', 'cancelled': '⚠️'}.get(status, 'ℹ️')
+text = f'{icon} <b>Night Ops Complete</b>\n'
+text += f'🕐 {datetime.utcnow().strftime(\"%Y-%m-%d %H:%M UTC\")}\n'
+text += f'⚙️ Mode: <code>{mode}</code>\n'
+text += f'📊 Status: <b>{status.upper()}</b>\n'
+text += f'🔗 <a href=\"https://github.com/{os.getenv(\"GITHUB_REPOSITORY\")}/actions/runs/{os.getenv(\"GITHUB_RUN_ID\")}\">View Run</a>'
+
+requests.post(f'https://api.telegram.org/bot{token}/sendMessage', json={
+    'chat_id': chat, 'text': text, 'parse_mode': 'HTML', 'disable_web_page_preview': True
+}, timeout=10)
+"

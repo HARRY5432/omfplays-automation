@@ -1,0 +1,6 @@
+instagrapi
+yt-dlp
+python-dotenv
+requests
+python-telegram-bot[job-queue]
+aiohttp
