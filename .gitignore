@@ -1,0 +1,28 @@
+# Credentials & secrets
+publisher_auth.json
+publisher_cookies.json
+publisher_session.json
+client_secrets.json
+cookies.txt
+*.json.secret
+
+# State
+state/
+logs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Large media (handled separately)
+raw/*.mp4
+raw/*.mov
+raw/*.mkv
+shorts/*.mp4
+shorts/*.jpg
+shorts/*.txt

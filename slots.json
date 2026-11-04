@@ -1,0 +1,25 @@
+{
+  "timezone": "Asia/Kolkata",
+  "slots": [
+    {
+      "time": "06:07",
+      "label": "Morning peak"
+    },
+    {
+      "time": "10:30",
+      "label": "Mid-morning"
+    },
+    {
+      "time": "14:00",
+      "label": "Afternoon"
+    },
+    {
+      "time": "18:30",
+      "label": "Evening peak"
+    },
+    {
+      "time": "21:00",
+      "label": "Night"
+    }
+  ]
+}

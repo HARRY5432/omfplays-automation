@@ -1,0 +1,25 @@
+{
+  "raw_dir": "raw",
+  "output_dir": "shorts",
+  "short_seconds": 40,
+  "daily_shorts": 3,
+  "start_date": "2026-10-25",
+  "frame_width": 1080,
+  "frame_height": 1920,
+  "fit": "cover",
+  "fps": 30,
+  "preset": "medium",
+  "crf": 16,
+  "video_codec": "libx265",
+  "ffmpeg_threads": 2,
+  "filter_threads": 1,
+  "keep_audio": true,
+  "max_workers": 1,
+  "skip_files": [],
+  "channels": [
+    "https://www.youtube.com/@game_value/",
+    "https://www.youtube.com/@YTrushhh/videos"
+  ],
+  "telegram_bot_token": "",
+  "telegram_chat_id": ""
+}
