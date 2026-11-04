@@ -1,17 +1,17 @@
-name: Night Upload & Ops
+name: Night Upload & Ops (Debug)
 
 on:
   schedule:
-    # 19:30-08:30 IST = UTC 14:00-03:00, every 30 min
     - cron: '*/30 14-23,0-3 * * *'
   workflow_dispatch:
     inputs:
       mode:
         description: 'Run mode'
         required: false
-        default: 'upload'
+        default: 'debug'
         type: choice
         options:
+          - debug
           - upload
           - status
           - cleanup
@@ -30,7 +30,7 @@ jobs:
 
     steps:
       # ──────────────────────────────────────────────
-      # Checkout repository
+      # 1. Checkout repository
       # ──────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -39,7 +39,21 @@ jobs:
           fetch-depth: 0
 
       # ──────────────────────────────────────────────
-      # Setup Python + deps
+      # 2. Show repo structure (DEBUG)
+      # ──────────────────────────────────────────────
+      - name: Show repo files
+        run: |
+          echo "=== Files in repo ==="
+          find . -type f -not -path './.git/*' | sort
+          echo ""
+          echo "=== Shorts folder ==="
+          ls -la shorts/ 2>/dev/null || echo "No shorts/ folder"
+          echo ""
+          echo "=== State folder ==="
+          ls -la state/ 2>/dev/null || echo "No state/ folder"
+
+      # ──────────────────────────────────────────────
+      # 3. Setup Python + deps
       # ──────────────────────────────────────────────
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -53,7 +67,7 @@ jobs:
           pip install instagrapi yt-dlp python-dotenv requests --break-system-packages
 
       # ──────────────────────────────────────────────
-      # Restore credentials from secrets
+      # 4. Restore credentials from secrets
       # ──────────────────────────────────────────────
       - name: Restore credentials
         env:
@@ -64,6 +78,12 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_ALLOWED_USERS: ${{ secrets.TELEGRAM_ALLOWED_USERS }}
         run: |
+          echo "=== Checking secrets ==="
+          if [ -z "$PUBLISHER_AUTH" ]; then echo "⚠️ PUBLISHER_AUTH not set"; fi
+          if [ -z "$PUBLISHER_COOKIES" ]; then echo "⚠️ PUBLISHER_COOKIES not set"; fi
+          if [ -z "$TELEGRAM_BOT_TOKEN" ]; then echo "⚠️ TELEGRAM_BOT_TOKEN not set"; fi
+          if [ -z "$TELEGRAM_CHAT_ID" ]; then echo "⚠️ TELEGRAM_CHAT_ID not set"; fi
+          
           echo "$PUBLISHER_AUTH" > publisher_auth.json
           echo "$PUBLISHER_COOKIES" > publisher_cookies.json
           echo "$PUBLISHER_SESSION" > publisher_session.json
@@ -74,17 +94,51 @@ jobs:
           EOF
 
       # ──────────────────────────────────────────────
-      # Run pipeline (upload mode)
+      # 5. Run pipeline (debug mode by default)
       # ──────────────────────────────────────────────
-      - name: Run night upload
+      - name: Run pipeline
         id: run
         env:
-          MODE: ${{ github.event.inputs.mode || 'upload' }}
+          MODE: ${{ github.event.inputs.mode || 'debug' }}
         run: |
-          MODE="${MODE:-upload}"
-          if [ "$MODE" = "upload" ]; then
+          MODE="${MODE:-debug}"
+          echo "=== Mode: $MODE ==="
+          
+          if [ "$MODE" = "debug" ]; then
+            echo "🔍 DEBUG MODE - No upload performed"
+            echo "=== Python version ==="
+            python --version
+            echo "=== Instagram login test ==="
+            python -c "
+from instagrapi import Client
+import json, os
+cl = Client()
+# Try cookie login
+if os.path.exists('publisher_cookies.json'):
+    raw = json.loads(open('publisher_cookies.json').read())
+    items = raw if isinstance(raw, list) else raw.get('cookies', [])
+    sid = next((c.get('value') for c in items if isinstance(c, dict) and c.get('name') == 'sessionid'), None)
+    if sid:
+        try:
+            cl.login_by_sessionid(sid)
+            print(f'✅ Cookie login OK: @{cl.username}')
+        except Exception as e:
+            print(f'❌ Cookie login failed: {e}')
+    else:
+        print('⚠️ No sessionid in cookies')
+    # Try session
+    if os.path.exists('publisher_session.json'):
+        try:
+            cl.load_settings('publisher_session.json')
+            cl.login('user', 'pass')
+            print(f'✅ Session login OK: @{cl.username}')
+        except Exception as e:
+            print(f'⚠️ Session login failed: {e}')
+    print('=== Login test complete ===')
+            "
+          elif [ "$MODE" = "upload" ]; then
             echo "🚀 Running night upload..."
-            python upload_shorts.py || echo "⚠️ Upload step exited non-zero (may be no shorts due)"
+            python upload_shorts.py || echo "⚠️ Upload step exited non-zero"
           elif [ "$MODE" = "status" ]; then
             echo "📊 Running status check..."
             python telegram_bot.py --status || true
@@ -97,7 +151,7 @@ jobs:
           fi
 
       # ──────────────────────────────────────────────
-      # Commit state changes (only if upload mode)
+      # 6. Commit state changes
       # ──────────────────────────────────────────────
       - name: Commit state changes
         if: github.event.inputs.mode == 'upload' || github.event_name == 'schedule'
@@ -114,14 +168,14 @@ jobs:
           fi
 
       # ──────────────────────────────────────────────
-      # Telegram summary (always runs)
+      # 7. Telegram summary (always runs)
       # ──────────────────────────────────────────────
       - name: Send Telegram summary
         if: always()
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          MODE: ${{ github.event.inputs.mode || 'upload' }}
+          MODE: ${{ github.event.inputs.mode || 'debug' }}
           JOB_STATUS: ${{ job.status }}
         run: |
           python -c "
@@ -130,7 +184,7 @@ from datetime import datetime
 
 token = os.getenv('TELEGRAM_BOT_TOKEN')
 chat = os.getenv('TELEGRAM_CHAT_ID')
-mode = os.getenv('MODE', 'upload')
+mode = os.getenv('MODE', 'debug')
 status = os.getenv('JOB_STATUS', 'unknown')
 
 if not token or not chat:
