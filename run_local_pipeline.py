@@ -236,15 +236,32 @@ def run(cmd: list[str], cwd: Path = HERE, retries: int = MAX_RETRIES) -> int:
 
 
 def git_push_changes() -> None:
-    log("Pushing changes to GitHub...")
+    """Push shorts + captions + state to GitHub. Never crashes the pipeline."""
+    log("Pushing shorts + captions + state to GitHub...")
     STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Add shorts (includes .mp4 + .txt captions) + state
     run(["git", "add", "shorts/", "state/uploads.json"])
+
+    # Check if anything changed
     result = subprocess.run(["git", "diff", "--staged", "--quiet"], cwd=str(HERE))
     if result.returncode == 0:
         log("No changes to push.")
         return
-    run(["git", "commit", "-m", f"Local pipeline: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}"])
-    run(["git", "push"])
+
+    # Commit
+    rc = run(["git", "commit", "-m", f"Local pipeline: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}"])
+    if rc != 0:
+        log("Git commit failed — skipping push.", "WARN")
+        return
+
+    # Push
+    rc = run(["git", "push"])
+    if rc != 0:
+        log("Git push failed — shorts remain local. Next run will retry.", "WARN")
+        return
+
+    log("✅ Shorts + captions + state pushed to GitHub.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
