@@ -226,9 +226,10 @@ def _run() -> int:
 
     from telegram_notify import (
         notify_pipeline_started, notify_raw_empty, notify_raw_low,
-        notify_short_built, notify_meta_generated, notify_upload_started,
+        notify_meta_generated, notify_upload_started,
         notify_short_uploaded, notify_upload_complete, notify_raw_fully_processed,
         notify_upload_failed, notify_download_failed, notify_build_failed,
+        notify_meta_failed,
     )
 
     ist_now = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -267,6 +268,7 @@ def _run() -> int:
     rc = run([sys.executable, "generate_meta.py"])
     if rc != 0:
         log("Meta generation failed — continuing with shorts anyway.", "WARN")
+    notify_meta_failed()
 
     # ── 4. LOCAL DAYTIME UPLOAD (only DUE slots, no --now) ──
     log("Uploading shorts locally during daytime (schedule-aware)...")
