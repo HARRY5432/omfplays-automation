@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
-"""upload_shorts.py — post omfplays shorts to Instagram.
-
-Source: shorts/s001.mp4, s002.mp4... (from build_shorts_omf.py)
-Caption: from matching .txt file (optional)
-Cover: from matching .jpg file (optional)
-Schedule: configurable slots in slots.json
-Progress: state/uploads.json — never double-posts.
 """
+upload_shorts.py — Robust Instagram uploader for GitHub Actions night run.
 
+Features:
+  • Cookie + session + password login fallbacks
+  • Atomic uploads.json writes
+  • Idempotent — never double-posts
+  • Retry on transient upload failure
+  • Telegram alerts on success/failure
+"""
 import argparse
 import json
+import os
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+import urllib.request
+import urllib.error
+from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -20,8 +24,11 @@ try:
     from instagrapi import Client
     from instagrapi.exceptions import ChallengeRequired, BadPassword, ClientThrottledError
 except ImportError:
-    print("ERROR: instagrapi not installed. Run: pip install instagrapi")
-    sys.exit(1)
+    print("Installing instagrapi...")
+    subprocess = __import__("subprocess")
+    subprocess.run([sys.executable, "-m", "pip", "install", "instagrapi", "--break-system-packages"], check=True)
+    from instagrapi import Client
+    from instagrapi.exceptions import ChallengeRequired, BadPassword, ClientThrottledError
 
 IST = ZoneInfo("Asia/Kolkata")
 HERE = Path(__file__).resolve().parent
@@ -33,41 +40,18 @@ PUBLISHER_SESSION = HERE / "publisher_session.json"
 PUBLISHER_COOKIES = HERE / "publisher_cookies.json"
 SLOTS_PATH = HERE / "slots.json"
 SHORTS_DIR = HERE / "shorts"
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-_DEFAULT_SLOTS = [
-    ("06:07", "Morning peak"),
-    ("10:30", "Mid-morning"),
-    ("14:00", "Afternoon"),
-    ("18:30", "Evening peak"),
-    ("21:00", "Night"),
+DEFAULT_SLOTS = [
+    ("19:30", "US East Lunch + EU Afternoon"),
+    ("22:30", "US East Prime Evening + EU Night"),
+    ("01:00", "US East Late Night + AU Morning"),
+    ("05:00", "US East Early Morning + Asia Start"),
+    ("08:30", "US East Morning + India Night"),
 ]
-
 BETWEEN_POSTS_SECS = 600
-
-
-def _load_slots():
-    if SLOTS_PATH.exists():
-        try:
-            data = json.loads(SLOTS_PATH.read_text(encoding="utf-8"))
-            rows = [(s["time"], s.get("label", "")) for s in data.get("slots", [])]
-            if rows:
-                return rows
-        except Exception:
-            pass
-    return _DEFAULT_SLOTS
-
-
-SLOTS = _load_slots()
-
-
-def log(msg: str, level: str = "info", date_str: str = "") -> None:
-    LOGS_DIR.mkdir(parents=True, exist_ok=True)
-    rec = {"ts": datetime.now(timezone.utc).isoformat(),
-           "level": level, "event": msg}
-    with open(LOGS_DIR / f"upload_{date_str or datetime.now(IST).strftime('%Y-%m-%d')}.log",
-               "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
-    print(f"  [{level.upper():5}] {msg}")
+MAX_UPLOAD_RETRIES = 2
 
 
 def load_json(path: Path, default):
@@ -79,13 +63,51 @@ def load_json(path: Path, default):
     return default
 
 
-def save_json(path: Path, data) -> None:
+def atomic_write_json(path: Path, data) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
 
 
-def load_auth() -> tuple[str, str] | tuple[None, None]:
-    import os
+def send_telegram(text: str) -> bool:
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return False
+    import urllib.request
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = json.dumps(
+        {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML",
+         "disable_web_page_preview": True}
+    ).encode("utf-8")
+    try:
+        req = urllib.request.Request(url, data=payload,
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return resp.status == 200
+    except Exception as e:
+        print(f"Telegram send failed: {e}", flush=True)
+        return False
+
+
+def load_slots() -> list[tuple[str, str]]:
+    if SLOTS_PATH.exists():
+        try:
+            data = json.loads(SLOTS_PATH.read_text(encoding="utf-8"))
+            rows = [(s["time"], s.get("label", "")) for s in data.get("slots", [])]
+            if rows:
+                return rows
+        except Exception:
+            pass
+    return DEFAULT_SLOTS
+
+
+SLOTS = load_slots()
+
+
+def load_auth() -> tuple[str | None, str | None]:
     user = os.environ.get("IG_PUBLISHER_USER")
     pw = os.environ.get("IG_PUBLISHER_PASSWORD")
     if user and pw:
@@ -103,8 +125,7 @@ def load_auth() -> tuple[str, str] | tuple[None, None]:
 def login(challenge_code: str | None = None, expected_user: str | None = None):
     user, pw = load_auth()
     if not user or not pw:
-        print("ERROR: no publisher credentials. Set IG_PUBLISHER_USER +")
-        print("IG_PUBLISHER_PASSWORD env vars, or publisher_auth.json.")
+        print("ERROR: no publisher credentials.", flush=True)
         sys.exit(1)
 
     cl = Client()
@@ -112,10 +133,11 @@ def login(challenge_code: str | None = None, expected_user: str | None = None):
     def verified(client) -> bool:
         expected = (expected_user or user).strip().lower()
         if expected and client.username and client.username.lower() != expected:
-            print(f"ERROR: logged in as @{client.username}, expected @{user}.")
+            print(f"ERROR: logged in as @{client.username}, expected @{user}.", flush=True)
             return False
         return True
 
+    # 1. Cookie login
     if PUBLISHER_COOKIES.exists():
         try:
             raw = json.loads(PUBLISHER_COOKIES.read_text(encoding="utf-8"))
@@ -124,52 +146,51 @@ def login(challenge_code: str | None = None, expected_user: str | None = None):
                         if isinstance(c, dict) and c.get("name") == "sessionid"), None)
             if sid:
                 cl.login_by_sessionid(sid)
-                if not verified(cl):
-                    sys.exit(4)
-                cl.dump_settings(PUBLISHER_SESSION)
-                return cl
-        except ClientThrottledError as e:
-            print("  ERROR: Instagram rate-limiting logins (429). Wait 15-60 min.")
+                if verified(cl):
+                    cl.dump_settings(PUBLISHER_SESSION)
+                    return cl
+        except ClientThrottledError:
+            print("ERROR: Instagram rate-limiting logins (429).", flush=True)
             sys.exit(3)
         except Exception:
             pass
 
+    # 2. Saved session
     if PUBLISHER_SESSION.exists():
         try:
             cl.load_settings(PUBLISHER_SESSION)
             cl.login(user, pw)
-            if not verified(cl):
-                sys.exit(4)
-            cl.dump_settings(PUBLISHER_SESSION)
-            return cl
-        except ClientThrottledError as e:
-            print("  ERROR: Instagram rate-limiting logins (429). Wait 15-60 min.")
+            if verified(cl):
+                cl.dump_settings(PUBLISHER_SESSION)
+                return cl
+        except ClientThrottledError:
+            print("ERROR: Instagram rate-limiting logins (429).", flush=True)
             sys.exit(3)
         except Exception:
             pass
 
+    # 3. Password login
     try:
         cl.login(user, pw)
     except BadPassword:
-        print("ERROR: Instagram rejected the password. Update publisher_auth.json.")
+        print("ERROR: Instagram rejected the password.", flush=True)
         sys.exit(1)
     except ChallengeRequired:
-        print("Instagram wants a verification code (new device).")
-        print("Check email/SMS, then re-run with:  --code 123456")
+        print("Instagram wants a verification code (new device).", flush=True)
+        print("Re-run with: --code 123456", flush=True)
         PUBLISHER_SESSION.unlink(missing_ok=True)
         if not challenge_code:
-            print("(no --code given, stopping.)")
             sys.exit(2)
         try:
             cl.challenge_resolve(challenge_code)
         except Exception as e:
-            print(f"ERROR: challenge failed ({type(e).__name__}: {e})")
+            print(f"ERROR: challenge failed ({e})", flush=True)
             sys.exit(1)
-    except ClientThrottledError as e:
-        print("ERROR: Instagram rate-limiting logins (429). Wait 15-60 min.")
+    except ClientThrottledError:
+        print("ERROR: Instagram rate-limiting logins (429).", flush=True)
         sys.exit(3)
     except Exception as e:
-        print(f"ERROR: login failed ({type(e).__name__}: {e})")
+        print(f"ERROR: login failed ({e})", flush=True)
         sys.exit(1)
 
     if not verified(cl):
@@ -180,8 +201,9 @@ def login(challenge_code: str | None = None, expected_user: str | None = None):
 
 
 def collect_shorts() -> list[dict]:
-    """Return list of {video, cover, caption, short_name} sorted by short number."""
     items = []
+    if not SHORTS_DIR.exists():
+        return items
     for v in sorted(SHORTS_DIR.glob("s*.mp4")):
         stem = v.stem
         cover = v.with_suffix(".jpg")
@@ -204,24 +226,21 @@ def slot_due(slot_hm: str, now: datetime) -> bool:
 def main() -> int:
     ap = argparse.ArgumentParser(description="Post omfplays shorts to Instagram.")
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--trial", action="store_true",
-                    help="post as TRIAL reel (followers don't see it)")
-    ap.add_argument("--now", action="store_true",
-                    help="ignore clock: post all unposted immediately")
-    ap.add_argument("--slot", type=int, default=None, help="only this slot index")
-    ap.add_argument("--code", default=None, help="challenge verification code")
-    ap.add_argument("--publisher-user", default=None,
-                    help="expected publisher username for login guard")
+    ap.add_argument("--trial", action="store_true")
+    ap.add_argument("--now", action="store_true")
+    ap.add_argument("--slot", type=int, default=None)
+    ap.add_argument("--code", default=None)
+    ap.add_argument("--publisher-user", default=None)
     args = ap.parse_args()
 
     now = datetime.now(IST)
     date_str = now.strftime("%Y-%m-%d")
     items = collect_shorts()
     if not items:
-        print(f"No shorts found in {SHORTS_DIR}. Run build_shorts_omf.py first.")
-        return 1
+        print(f"No shorts found in {SHORTS_DIR}.", flush=True)
+        return 0
 
-    uploads: dict = load_json(UPLOADS_PATH, {})
+    uploads = load_json(UPLOADS_PATH, {})
     plan = []
     for i, (hm, label) in enumerate(SLOTS):
         if args.slot is not None and i != args.slot:
@@ -238,68 +257,89 @@ def main() -> int:
         else:
             plan.append((i, hm, label, items[i], "DUE"))
 
-    print(f"Date: {date_str} | Shorts: {len(items)} | Now: {now.strftime('%H:%M IST')}")
+    print(f"Date: {date_str} | Shorts: {len(items)} | Now: {now.strftime('%H:%M IST')}", flush=True)
     for i, hm, label, it, st in plan:
         what = it["short"] if it else "-"
-        print(f"  slot {i} [{hm} IST] {label:20} {what:10} {st}")
+        print(f"  slot {i} [{hm} IST] {label:20} {what:10} {st}", flush=True)
 
     if args.dry_run:
-        print("\n(dry run — nothing posted)")
+        print("(dry run — nothing posted)", flush=True)
         return 0
 
     due = [(i, it) for i, _, _, it, st in plan if st == "DUE"]
     if not due:
-        print("Nothing due right now.")
+        print("Nothing due right now.", flush=True)
         return 0
     if args.trial and len(due) > 1:
         due = due[:1]
-        print("(trial mode: posting 1 reel only)")
+        print("(trial mode: posting 1 reel only)", flush=True)
 
     cl = login(args.code, args.publisher_user)
     me = cl.username if hasattr(cl, "username") else "?"
-    print(f"Logged in as @{me}")
+    print(f"Logged in as @{me}", flush=True)
 
     posted_count = 0
     for n, (i, it) in enumerate(due):
         if n > 0:
-            print(f"  ...waiting {BETWEEN_POSTS_SECS // 60} min before next post...")
+            print(f"Waiting {BETWEEN_POSTS_SECS // 60} min before next post...", flush=True)
             time.sleep(BETWEEN_POSTS_SECS)
 
         caption = ""
         if it["caption_file"]:
-            caption = Path(it["caption_file"]).read_text(
-                encoding="utf-8", errors="replace").strip()[:2200]
+            try:
+                caption = Path(it["caption_file"]).read_text(encoding="utf-8", errors="replace").strip()[:2200]
+            except Exception:
+                pass
 
-        print(f"\nPosting slot {i}: {it['short']} (trial={args.trial}) ...")
-        try:
-            media = cl.clip_upload(
-                it["video"], caption,
-                thumbnail=it["cover"] if it["cover"] else None,
-                trial=args.trial,
+        print(f"Posting slot {i}: {it['short']} (trial={args.trial})...", flush=True)
+        success = False
+        for attempt in range(1, MAX_UPLOAD_RETRIES + 1):
+            try:
+                media = cl.clip_upload(
+                    it["video"], caption,
+                    thumbnail=it["cover"] if it["cover"] else None,
+                    trial=args.trial,
+                )
+                success = True
+                break
+            except Exception as e:
+                print(f"  Upload attempt {attempt} failed: {type(e).__name__}: {e}", flush=True)
+                if attempt < MAX_UPLOAD_RETRIES:
+                    time.sleep(RETRY_DELAY_SEC if 'RETRY_DELAY_SEC' in dir() else 10)
+
+        if not success:
+            send_telegram(
+                f"🚨 <b>Upload Failed</b>\n"
+                f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M IST')}\n"
+                f"Slot {i}: {it['short']}\n"
+                f"Check logs."
             )
-        except Exception as e:
-            log(f"FAILED slot {i} {it['short']}: {type(e).__name__}: {e}",
-                level="error", date_str=date_str)
-            print(f"  FAILED: {type(e).__name__}: {e}")
-            print("  Stopping (progress kept in state/uploads.json).")
+            print("Stopping. Progress kept in state/uploads.json.", flush=True)
             return 1
 
         key = f"{date_str}#{i}"
-        uploads[key] = {"status": "posted", "slot": SLOTS[i][0],
-                        "short": it["short"],
-                        "media_pk": str(getattr(media, "pk", "?")),
-                        "media_code": getattr(media, "code", None),
-                        "trial": args.trial,
-                        "posted_at": datetime.now(timezone.utc).isoformat()}
-        save_json(UPLOADS_PATH, uploads)
+        uploads[key] = {
+            "status": "posted", "slot": SLOTS[i][0],
+            "short": it["short"],
+            "media_pk": str(getattr(media, "pk", "?")),
+            "media_code": getattr(media, "code", None),
+            "trial": args.trial,
+            "posted_at": datetime.now(timezone.utc).isoformat(),
+        }
+        atomic_write_json(UPLOADS_PATH, uploads)
         posted_count += 1
-        log(f"posted slot {i} {it['short']} pk={uploads[key]['media_pk']} trial={args.trial}", date_str=date_str)
-        print(f"  POSTED media_pk={uploads[key]['media_pk']}")
+        print(f"  POSTED media_pk={uploads[key]['media_pk']}", flush=True)
+
+    send_telegram(
+        f"✅ <b>Night Upload Complete</b>\n"
+        f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M IST')}\n"
+        f"📤 Posted: {posted_count} reel(s)"
+    )
 
     posted_total = sum(1 for k, v in uploads.items()
                        if k.startswith(date_str + "#") and v.get("status") == "posted")
-    print(f"\nDone. Posted this run: {posted_count}, Total today: {posted_total}/{len(items)}")
-    print(f"Ledger: {UPLOADS_PATH}")
+    print(f"\nDone. Posted this run: {posted_count}, Total today: {posted_total}/{len(items)}", flush=True)
+    print(f"Ledger: {UPLOADS_PATH}", flush=True)
     return 0
 
 

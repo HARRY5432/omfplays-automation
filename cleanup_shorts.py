@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 """
-cleanup_shorts.py — Delete shorts that have been successfully uploaded.
+cleanup_shorts.py — Safely delete shorts that have been successfully uploaded.
 
-Run after upload to free disk space. Keeps only unposted shorts.
+Only removes shorts marked as 'posted' in uploads.json.
+Never deletes pending shorts.
 """
 import json
 import os
+import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 SHORTS_DIR = HERE / "shorts"
 STATE_DIR = HERE / "state"
 UPLOADS_PATH = STATE_DIR / "uploads.json"
+
 
 def load_json(path: Path, default):
     if path.exists():
@@ -21,36 +24,46 @@ def load_json(path: Path, default):
             pass
     return default
 
-def main():
+
+def atomic_write_json(path: Path, data) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def main() -> int:
     uploads = load_json(UPLOADS_PATH, {})
-    
-    # Find all shorts that are marked as posted
-    posted_shorts = set()
-    for key, val in uploads.items():
-        if val.get("status") == "posted":
-            short_name = val.get("short")
-            if short_name:
-                posted_shorts.add(short_name)
-    
+    posted_shorts = {
+        v.get("short") for v in uploads.values()
+        if v.get("status") == "posted" and v.get("short")
+    }
+
     if not posted_shorts:
-        print("No posted shorts to clean up")
+        print("No posted shorts to clean up.", flush=True)
         return 0
-    
-    # Delete posted shorts from disk
+
     deleted = 0
     freed_bytes = 0
-    for short_name in posted_shorts:
-        for ext in (".mp4", ".jpg", ".txt"):
+    for short_name in sorted(posted_shorts):
+        for ext in (".mp4", ".jpg", ".txt", ".json"):
             f = SHORTS_DIR / f"{short_name}{ext}"
             if f.exists():
-                size = f.stat().st_size
-                f.unlink()
-                freed_bytes += size
-                deleted += 1
-                print(f"  🗑️ Deleted {f.name} ({size/1024/1024:.1f} MB)")
-    
-    print(f"\n✅ Cleanup complete: {deleted} files deleted, {freed_bytes/1024/1024:.1f} MB freed")
+                try:
+                    size = f.stat().st_size
+                    f.unlink()
+                    freed_bytes += size
+                    deleted += 1
+                    print(f"  🗑️  {f.name} ({size / 1024 / 1024:.1f} MB)", flush=True)
+                except Exception as e:
+                    print(f"  ⚠️  Could not delete {f.name}: {e}", flush=True)
+
+    print(f"\n✅ Cleanup: {deleted} files deleted, {freed_bytes / 1024 / 1024:.1f} MB freed", flush=True)
     return 0
 
+
 if __name__ == "__main__":
-    exit(main())
+    sys.exit(main())
