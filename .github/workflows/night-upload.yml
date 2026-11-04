@@ -1,4 +1,4 @@
-name: Night Upload & Ops (Debug)
+name: Night Upload & Ops
 
 on:
   schedule:
@@ -83,11 +83,11 @@ jobs:
           if [ -z "$PUBLISHER_COOKIES" ]; then echo "⚠️ PUBLISHER_COOKIES not set"; fi
           if [ -z "$TELEGRAM_BOT_TOKEN" ]; then echo "⚠️ TELEGRAM_BOT_TOKEN not set"; fi
           if [ -z "$TELEGRAM_CHAT_ID" ]; then echo "⚠️ TELEGRAM_CHAT_ID not set"; fi
-          
+
           echo "$PUBLISHER_AUTH" > publisher_auth.json
           echo "$PUBLISHER_COOKIES" > publisher_cookies.json
           echo "$PUBLISHER_SESSION" > publisher_session.json
-          cat > .env <<EOF
+          cat > .env <<'EOF'
           TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
           TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
           TELEGRAM_ALLOWED_USERS=${TELEGRAM_ALLOWED_USERS}
@@ -103,39 +103,15 @@ jobs:
         run: |
           MODE="${MODE:-debug}"
           echo "=== Mode: $MODE ==="
-          
+
           if [ "$MODE" = "debug" ]; then
             echo "🔍 DEBUG MODE - No upload performed"
             echo "=== Python version ==="
             python --version
+            echo "=== Files check ==="
+            ls -la *.py *.json 2>/dev/null || true
             echo "=== Instagram login test ==="
-            python -c "
-from instagrapi import Client
-import json, os
-cl = Client()
-# Try cookie login
-if os.path.exists('publisher_cookies.json'):
-    raw = json.loads(open('publisher_cookies.json').read())
-    items = raw if isinstance(raw, list) else raw.get('cookies', [])
-    sid = next((c.get('value') for c in items if isinstance(c, dict) and c.get('name') == 'sessionid'), None)
-    if sid:
-        try:
-            cl.login_by_sessionid(sid)
-            print(f'✅ Cookie login OK: @{cl.username}')
-        except Exception as e:
-            print(f'❌ Cookie login failed: {e}')
-    else:
-        print('⚠️ No sessionid in cookies')
-    # Try session
-    if os.path.exists('publisher_session.json'):
-        try:
-            cl.load_settings('publisher_session.json')
-            cl.login('user', 'pass')
-            print(f'✅ Session login OK: @{cl.username}')
-        except Exception as e:
-            print(f'⚠️ Session login failed: {e}')
-    print('=== Login test complete ===')
-            "
+            python debug_login.py || true
           elif [ "$MODE" = "upload" ]; then
             echo "🚀 Running night upload..."
             python upload_shorts.py || echo "⚠️ Upload step exited non-zero"
@@ -178,27 +154,4 @@ if os.path.exists('publisher_cookies.json'):
           MODE: ${{ github.event.inputs.mode || 'debug' }}
           JOB_STATUS: ${{ job.status }}
         run: |
-          python -c "
-import os, json, requests, sys
-from datetime import datetime
-
-token = os.getenv('TELEGRAM_BOT_TOKEN')
-chat = os.getenv('TELEGRAM_CHAT_ID')
-mode = os.getenv('MODE', 'debug')
-status = os.getenv('JOB_STATUS', 'unknown')
-
-if not token or not chat:
-    print('Telegram not configured')
-    sys.exit(0)
-
-icon = {'success': '✅', 'failure': '❌', 'cancelled': '⚠️'}.get(status, 'ℹ️')
-text = f'{icon} <b>Night Ops Complete</b>\n'
-text += f'🕐 {datetime.utcnow().strftime(\"%Y-%m-%d %H:%M UTC\")}\n'
-text += f'⚙️ Mode: <code>{mode}</code>\n'
-text += f'📊 Status: <b>{status.upper()}</b>\n'
-text += f'🔗 <a href=\"https://github.com/{os.getenv(\"GITHUB_REPOSITORY\")}/actions/runs/{os.getenv(\"GITHUB_RUN_ID\")}\">View Run</a>'
-
-requests.post(f'https://api.telegram.org/bot{token}/sendMessage', json={
-    'chat_id': chat, 'text': text, 'parse_mode': 'HTML', 'disable_web_page_preview': True
-}, timeout=10)
-"
+          python debug_telegram.py || true
