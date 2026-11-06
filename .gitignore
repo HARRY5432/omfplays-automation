@@ -1,35 +1,47 @@
-# Credentials & secrets
+# ── Secrets (never committed) ────────────────────────────────────────────────
+.env
+.env.*
 publisher_auth.json
 publisher_cookies.json
 publisher_session.json
 client_secrets.json
 cookies.txt
 *.json.secret
+token.json
 
-# State
-state/
+# ── State: only the ledgers shared between the two nodes are tracked ─────────
+state/*
+!state/uploads.json
+!state/nodes.json
+!state/meta_counter.json
+!state/downloads.json
+!state/download_archive.txt
+
+# ── Logs ────────────────────────────────────────────────────────────────────
 logs/
 
-# Python
+# ── Python ──────────────────────────────────────────────────────────────────
 __pycache__/
 *.pyc
 *.pyo
+.venv/
 
-# OS
+# ── OS ──────────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
 
-# Large media (handled separately)
-raw/*.mp4
-raw/*.mov
-raw/*.mkv
-raw/*.part
-raw/*.info.json
-shorts/*.mp4
-shorts/*.jpg
-shorts/*.txt
-shorts/manifest.json
+# ── Raw footage stays local (multi-GB 4K sources) ───────────────────────────
+raw/
 
-# Temp / lock
+# ── Shorts ARE committed so the night node can publish them ─────────────────
+shorts/*
+!shorts/manifest.json
+!shorts/s*.mp4
+!shorts/s*.txt
+!shorts/s*.jpg
+
+# ── Temp / lock / partial ───────────────────────────────────────────────────
 *.tmp
 *.lock
+*.part
+*.part-Frag*
