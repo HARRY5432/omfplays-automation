@@ -1,0 +1,47 @@
+{
+  "2026-11-04#0": {
+    "status": "posted",
+    "slot": "19:30",
+    "short": "s001",
+    "media_pk": "4023058927543582517",
+    "media_code": "DfUxseOsv81",
+    "trial": false,
+    "posted_at": "2026-11-04T15:27:31.340766+00:00"
+  },
+  "2026-11-04#1": {
+    "status": "posted",
+    "slot": "22:30",
+    "short": "s002",
+    "media_pk": "4023064252522866795",
+    "media_code": "DfUy59gMqhr",
+    "trial": false,
+    "posted_at": "2026-11-04T15:38:27.849722+00:00"
+  },
+  "2026-11-04#2": {
+    "status": "posted",
+    "slot": "01:00",
+    "short": "s003",
+    "media_pk": "4023069757387550108",
+    "media_code": "DfU0KETs62c",
+    "trial": false,
+    "posted_at": "2026-11-04T15:49:21.486118+00:00"
+  },
+  "2026-11-04#3": {
+    "status": "posted",
+    "slot": "05:00",
+    "short": "s004",
+    "media_pk": "4023070984305173712",
+    "media_code": "DfU0b69sOTQ",
+    "trial": false,
+    "posted_at": "2026-11-04T15:51:50.872603+00:00"
+  },
+  "2026-11-04#4": {
+    "status": "posted",
+    "slot": "08:30",
+    "short": "s005",
+    "media_pk": "4023082187643646987",
+    "media_code": "DfU2-84s3QL",
+    "trial": false,
+    "posted_at": "2026-11-04T16:14:02.061197+00:00"
+  }
+}
