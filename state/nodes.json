@@ -1,14 +1,14 @@
 {
   "local": {
-    "runs": 2,
-    "total_built": 0,
+    "runs": 3,
+    "total_built": 3,
     "total_posted": 0,
-    "last_run_utc": "2026-11-06T15:47:14+00:00",
-    "last_result": "running",
-    "last_note": "started",
+    "last_run_utc": "2026-11-06T15:55:24+00:00",
+    "last_result": "ok",
+    "last_note": "0 posted / 4 waiting",
     "host": "DESKTOP-P2BV721",
-    "last_built": 0,
+    "last_built": 3,
     "last_posted": 0,
-    "state": "running"
+    "state": "ok"
   }
 }
