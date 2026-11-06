@@ -1,56 +1,40 @@
 #!/usr/bin/env python3
+"""debug_login.py — prove Instagram login works without publishing anything.
+
+Reuses upload_shorts.login() so the workflow tests the exact code path that
+publishes; the previous version had its own copy that called
+cl.login("user", "pass") with literal placeholders.
 """
-debug_login.py — Debug login test for GitHub Actions workflow.
-Tests cookie and session login without posting anything.
-"""
-import json
-import os
+from __future__ import annotations
+
 import sys
 
-try:
-    from instagrapi import Client
-except ImportError:
-    print("❌ instagrapi not installed")
-    sys.exit(1)
-
-cl = Client()
-ok = False
-
-# Try cookie login
-if os.path.exists("publisher_cookies.json"):
+for _stream in (sys.stdout, sys.stderr):
     try:
-        raw = json.loads(open("publisher_cookies.json", "r", encoding="utf-8").read())
-        items = raw if isinstance(raw, list) else raw.get("cookies", [])
-        sid = next((c.get("value") for c in items if isinstance(c, dict) and c.get("name") == "sessionid"), None)
-        if sid:
-            try:
-                cl.login_by_sessionid(sid)
-                print(f"✅ Cookie login OK: @{cl.username}")
-                ok = True
-            except Exception as e:
-                print(f"❌ Cookie login failed: {e}")
-        else:
-            print("⚠️ No sessionid found in cookies")
-    except Exception as e:
-        print(f"❌ Could not read cookies file: {e}")
-else:
-    print("⚠️ publisher_cookies.json not found")
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
-# Try session login
-if os.path.exists("publisher_session.json"):
+
+def main() -> int:
     try:
-        cl.load_settings("publisher_session.json")
-        cl.login("user", "pass")
-        print(f"✅ Session login OK: @{cl.username}")
-        ok = True
-    except Exception as e:
-        print(f"⚠️ Session login failed: {e}")
-else:
-    print("⚠️ publisher_session.json not found")
+        from upload_shorts import login
+    except ImportError as e:
+        print(f"instagrapi/upload_shorts unavailable: {e}")
+        return 1
 
-if not ok:
-    print("❌ No login method succeeded")
-    sys.exit(1)
-else:
-    print("✅ Login test complete")
-    sys.exit(0)
+    try:
+        client = login()
+    except SystemExit as e:
+        print(f"login failed (exit {e.code})")
+        return int(e.code or 1)
+    except Exception as e:
+        print(f"login failed: {type(e).__name__}: {e}")
+        return 1
+
+    print(f"login ok: @{getattr(client, 'username', '?')}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

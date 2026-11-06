@@ -106,20 +106,28 @@ def build_keyboard() -> dict:
 
 
 def status_text() -> str:
-    shorts = get_shorts_status()
-    total, used, free = get_disk_usage()
-    posted = sum(1 for s in shorts if s["posted"])
-    pending = len(shorts) - posted
-    return (
-        "📊 <b>omfplays Pipeline Status</b>\n"
-        f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M IST')}\n"
-        "\n"
-        f"🎬 Total shorts: <b>{len(shorts)}</b>\n"
-        f"✅ Posted: <b>{posted}</b>\n"
-        f"⏳ Pending: <b>{pending}</b>\n"
-        "\n"
-        f"💾 Disk: {format_bytes(used)} / {format_bytes(total)} ({format_bytes(free)} free)"
-    )
+    """Shared command-centre block (same view the pipeline sends)."""
+    try:
+        import html
+
+        import pipeline_status as ps
+
+        return f"<pre>{html.escape(ps.render(ps.snapshot()))}</pre>"
+    except Exception:
+        shorts = get_shorts_status()
+        total, used, free = get_disk_usage()
+        posted = sum(1 for s in shorts if s["posted"])
+        pending = len(shorts) - posted
+        return (
+            "📊 <b>omfplays Pipeline Status</b>\n"
+            f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M IST')}\n"
+            "\n"
+            f"🎬 Total shorts: <b>{len(shorts)}</b>\n"
+            f"✅ Posted: <b>{posted}</b>\n"
+            f"⏳ Pending: <b>{pending}</b>\n"
+            "\n"
+            f"💾 Disk: {format_bytes(used)} / {format_bytes(total)} ({format_bytes(free)} free)"
+        )
 
 
 def shorts_text() -> str:
@@ -315,7 +323,9 @@ def run_one_shot(command: str):
 
 if __name__ == "__main__":
     if "--daemon" in sys.argv:
-        asyncio.run(run_daemon())
+        # run_polling() manages its own event loop; wrapping it in
+        # asyncio.run() made the daemon fail on startup.
+        run_daemon()
     elif "--status" in sys.argv:
         run_one_shot("status")
     elif "--shorts" in sys.argv:

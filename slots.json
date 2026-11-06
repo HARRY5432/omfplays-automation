@@ -3,23 +3,28 @@
   "slots": [
     {
       "time": "19:30",
-      "label": "US East Lunch + EU Afternoon"
+      "label": "US East Lunch + EU Afternoon",
+      "node": "github"
     },
     {
       "time": "22:30",
-      "label": "US East Prime Evening + EU Night"
+      "label": "US East Prime Evening + EU Night",
+      "node": "github"
     },
     {
       "time": "01:00",
-      "label": "US East Late Night + AU Morning"
+      "label": "US East Late Night + AU Morning",
+      "node": "github"
     },
     {
       "time": "05:00",
-      "label": "US East Early Morning + Asia Start"
+      "label": "US East Early Morning + Asia Start",
+      "node": "github"
     },
     {
       "time": "08:30",
-      "label": "US East Morning + India Night"
+      "label": "US East Morning + India Night",
+      "node": "local"
     }
   ]
 }

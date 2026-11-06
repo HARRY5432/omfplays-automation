@@ -1,37 +1,84 @@
 #!/usr/bin/env python3
-"""
-generate_meta.py — OpenRouter-powered title/description generator for shorts.
+"""generate_meta.py — OpenRouter captions ("Day XX of Modern Warfare").
 
-Reads shorts/s001.mp4, s002.mp4... and writes matching .txt sidecar files
-with a "Day XX of Modern Warfare" style title + description.
+Reliability notes
+-----------------
+* Idempotent: an existing non-empty .txt sidecar is left alone (the old code
+  looked for a "TITLE:" marker it never wrote, so it called the API again on
+  every single run).
+* The "Day XX" counter is persistent (state/meta_counter.json) and committed,
+  so numbering continues across runs and across both nodes instead of
+  restarting at 1 every day.
+* Missing key / API hiccup falls back to a usable caption and still consumes a
+  day number, so the series never repeats a number.
 
-Requires:
-  OPENROUTER_API_KEY  (env var or .env)
-  OPENROUTER_MODEL    (optional, defaults to openrouter/fusion)
+Usage:
+  python generate_meta.py [--force] [--limit N]
 """
+from __future__ import annotations
+
 import json
 import os
-import re
 import sys
-import urllib.request
+import time
 import urllib.error
-from datetime import datetime
+import urllib.request
 from pathlib import Path
 
 try:
     from dotenv import load_dotenv
+
     load_dotenv()
 except Exception:
     pass
 
 HERE = Path(__file__).resolve().parent
 SHORTS_DIR = HERE / "shorts"
+STATE_DIR = HERE / "state"
+COUNTER_PATH = STATE_DIR / "meta_counter.json"
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/fusion")
 
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
-def build_prompt(short_name: str, index: int, total: int) -> str:
+
+def load_json(path: Path, default):
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+
+
+def atomic_write_json(path: Path, data) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def next_day() -> int:
+    state = load_json(COUNTER_PATH, {})
+    day = int(state.get("next_day", 1) or 1)
+    return day, state
+
+
+def commit_day(state: dict, day: int) -> None:
+    state = dict(state or {})
+    state["next_day"] = int(day) + 1
+    atomic_write_json(COUNTER_PATH, state)
+
+
+def build_prompt(short_name: str, day: int) -> str:
     return f"""
 You are a premium short-form gaming content writer.
 
@@ -40,120 +87,123 @@ Write a YouTube Shorts TITLE and DESCRIPTION for a gaming clip.
 
 Clip details:
 - File: {short_name}
-- Sequence: Day {index} of {total}
+- Series position: Day {day} of Modern Warfare
 - Theme: Modern Warfare / Tactical Gaming / Combat Highlights
 
 Requirements:
-- TITLE: Must start with "Day {index} of Modern Warfare" followed by a punchy hook. Max 60 chars.
-- DESCRIPTION: 2-4 sentences, hype-driven, gaming tone. Include relevant hashtags at the end.
-- Tone: Intense, tactical, modern warfare, gaming community.
+- TITLE: must start with "Day {day} of Modern Warfare" followed by a punchy hook. Max 60 chars.
+- DESCRIPTION: 2-4 sentences, hype-driven, gaming tone, hashtags at the end.
+- Tone: intense, tactical, modern warfare, gaming community.
 
-Output EXACTLY this JSON format and nothing else:
+Output EXACTLY this JSON and nothing else:
 {{
-  "title": "Day {index} of Modern Warfare - <hook>",
-  "description": "<2-4 sentences hype description>\n\n#ModernWarfare #Gaming #Tactical #Shorts"
+  "title": "Day {day} of Modern Warfare - <hook>",
+  "description": "<2-4 sentences>\\n\\n#ModernWarfare #Gaming #Tactical #Shorts"
 }}
 """
 
 
 def call_openrouter(prompt: str) -> dict | None:
     if not OPENROUTER_API_KEY:
-        print("  ⚠️  OPENROUTER_API_KEY not set. Using fallback meta.", flush=True)
+        print("  OPENROUTER_API_KEY not set — using fallback caption", flush=True)
         return None
 
-    payload = json.dumps({
-        "model": OPENROUTER_MODEL,
-        "messages": [
-            {"role": "system", "content": "You are a premium gaming short-form content writer."},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0.8,
-        "max_tokens": 300,
-    }).encode("utf-8")
+    payload = json.dumps(
+        {
+            "model": OPENROUTER_MODEL,
+            "messages": [
+                {"role": "system", "content": "You are a premium gaming short-form content writer."},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.8,
+            "max_tokens": 300,
+        }
+    ).encode("utf-8")
 
-    req = urllib.request.Request(
-        "https://openrouter.ai/api/v1/chat/completions",
-        data=payload,
-        headers={
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json",
-        },
-    )
+    for attempt in (1, 2):
+        req = urllib.request.Request(
+            "https://openrouter.ai/api/v1/chat/completions",
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=45) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            content = data["choices"][0]["message"]["content"].strip()
+            if content.startswith("```"):
+                content = content.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+            parsed = json.loads(content)
+            if parsed.get("title") and parsed.get("description"):
+                return parsed
+            raise ValueError("response missing title/description")
+        except Exception as e:
+            print(f"  OpenRouter attempt {attempt} failed: {e}", flush=True)
+            if attempt == 1:
+                time.sleep(3)
+    return None
 
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        content = data["choices"][0]["message"]["content"].strip()
-        if content.startswith("```"):
-            content = content.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-        return json.loads(content)
-    except Exception as e:
-        print(f"  ⚠️  OpenRouter failed: {e}. Using fallback meta.", flush=True)
-        return None
 
-
-def fallback_meta(short_name: str, index: int, total: int) -> dict:
+def fallback_meta(day: int) -> dict:
     return {
-        "title": f"Day {index} of Modern Warfare - Tactical Highlight",
+        "title": f"Day {day} of Modern Warfare - Tactical Highlight",
         "description": (
-            f"Day {index} of Modern Warfare brings you intense tactical combat highlights. "
-            f"Pure adrenaline, zero filler.\n\n"
-            f"#ModernWarfare #Gaming #Tactical #CombatHighlights #Shorts"
+            f"Day {day} of Modern Warfare brings you intense tactical combat highlights. "
+            "Pure adrenaline, zero filler.\n\n"
+            "#ModernWarfare #Gaming #Tactical #CombatHighlights #Shorts"
         ),
     }
 
 
-def generate_meta_for_short(short_path: Path, index: int, total: int) -> dict:
-    txt_path = short_path.with_suffix(".txt")
-
-    # Skip if .txt already exists (idempotent)
-    if txt_path.exists():
-        try:
-            existing = txt_path.read_text(encoding="utf-8")
-            if "TITLE:" in existing and "DESCRIPTION:" in existing:
-                return {"skipped": True, "short": short_path.stem}
-        except Exception:
-            pass
-
-    prompt = build_prompt(short_path.name, index, total)
-    result = call_openrouter(prompt)
-
-    if result is None:
-        result = fallback_meta(short_path.name, index, total)
-
-    title = result.get("title", f"Day {index} of Modern Warfare")
-    description = result.get("description", f"Day {index} of Modern Warfare highlight.")
-
-    # Write clean caption text for Instagram (upload_shorts.py sends whole file as caption)
-    content = f"{title}\n\n{description}"
-
-    txt_path.write_text(content, encoding="utf-8")
-    print(f"  📝 {txt_path.name} -> {title[:50]}...", flush=True)
-
-    return {"short": short_path.stem, "title": title, "description": description}
-
-
 def main() -> int:
+    args = sys.argv[1:]
+    force = "--force" in args
+    limit = None
+    if "--limit" in args:
+        try:
+            limit = max(1, int(args[args.index("--limit") + 1]))
+        except Exception:
+            print("ERROR: --limit requires a positive integer", flush=True)
+            return 2
+
     if not SHORTS_DIR.exists():
         print("No shorts/ folder found.", flush=True)
         return 0
 
     shorts = sorted(SHORTS_DIR.glob("s*.mp4"))
     if not shorts:
-        print("No shorts found to generate meta for.", flush=True)
+        print("No shorts found to generate captions for.", flush=True)
         return 0
 
-    total = len(shorts)
-    print(f"Generating meta for {total} short(s)...", flush=True)
+    created = skipped = 0
+    for short_path in shorts:
+        txt_path = short_path.with_suffix(".txt")
+        if txt_path.exists() and not force:
+            try:
+                if txt_path.stat().st_size > 0:
+                    skipped += 1
+                    continue
+            except OSError:
+                pass
 
-    results = []
-    for idx, short_path in enumerate(shorts, 1):
-        result = generate_meta_for_short(short_path, idx, total)
-        results.append(result)
+        day, state = next_day()
+        result = call_openrouter(build_prompt(short_path.name, day)) or fallback_meta(day)
 
-    saved = sum(1 for r in results if not r.get("skipped"))
-    skipped = sum(1 for r in results if r.get("skipped"))
-    print(f"\n✅ Meta generated: {saved} new, {skipped} already existed.", flush=True)
+        title = str(result.get("title") or f"Day {day} of Modern Warfare").strip()
+        description = str(result.get("description") or "").strip()
+        content = f"{title}\n\n{description}".strip()
+
+        txt_path.write_text(content + "\n", encoding="utf-8")
+        commit_day(state, day)
+        created += 1
+        print(f"  {txt_path.name} -> Day {day}: {title[:48]}", flush=True)
+
+        if limit is not None and created >= limit:
+            break
+
+    print(f"\nCaptions: {created} new, {skipped} already present.", flush=True)
     return 0
 
 

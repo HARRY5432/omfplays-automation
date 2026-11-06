@@ -1,56 +1,69 @@
 #!/usr/bin/env python3
-"""
-run_local_pipeline.py — Production-grade autonomous pipeline (DAYTIME).
+"""run_local_pipeline.py — the daytime (local) node of the omfplays automation.
 
-Responsibilities:
-  1. Check raw status — Telegram alert if low/empty BEFORE downloading
-  2. Download only when raw is below threshold
-  3. Build vertical shorts (capped at daily_shorts per run)
-  4. Generate OpenRouter meta (Day XX of Modern Warfare titles)
-  5. Upload ONLY shorts whose schedule slot is DUE (no --now)
-  6. Push remaining unposted shorts + captions + state to GitHub
-  7. Telegram alerts at every milestone (advanced formatting)
+What it does, in order:
+  1. take the run lock (steals it if the previous holder died)
+  2. report raw/shots status to Telegram (command centre block)
+  3. download only when the raw library is nearly empty
+  4. build vertical shorts (capped by config.daily_shorts)
+  5. generate OpenRouter captions ("Day XX of Modern Warfare")
+  6. publish the slots OWNED BY THIS NODE that are due
+  7. delete published shorts, push pending ones + state to GitHub
+  8. send an end-of-run summary and record the run in state/nodes.json
 
-Reliability:
-  • File locking — prevents concurrent runs
-  • Atomic state writes — no corrupted JSON
-  • Retry logic — transient failures retried
-  • Config validation — fails fast
-  • Idempotent — safe to re-run at any time
+Designed to be started unattended (Task Scheduler / at logon): it never
+prompts, never `pause`s, is safe to run twice, and keeps going when a
+non-critical step fails.
+
+Flags:
+  --status       print the status block and exit
+  --dry-run      report only, change nothing
+  --no-push      skip git push
+  --ignore-lock  run even if another instance holds the lock
 """
+from __future__ import annotations
+
+import argparse
 import json
 import os
 import subprocess
 import sys
 import time
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
 try:
     from dotenv import load_dotenv
+
     load_dotenv()
 except Exception:
     pass
+
+NODE = os.getenv("PIPELINE_NODE", "local")
 
 HERE = Path(__file__).resolve().parent
 RAW_DIR = HERE / "raw"
 SHORTS_DIR = HERE / "shorts"
 STATE_DIR = HERE / "state"
+LOGS_DIR = HERE / "logs"
 LOCK_PATH = STATE_DIR / "pipeline.lock"
 UPLOADS_PATH = STATE_DIR / "uploads.json"
-MANIFEST_PATH = SHORTS_DIR / "manifest.json"
 CONFIG_PATH = HERE / "config.json"
-LOGS_DIR = HERE / "logs"
 PIPELINE_LOG = LOGS_DIR / "pipeline.log"
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
-MAX_RETRIES = 3
-RETRY_DELAY_SEC = 10
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# LOGGING
+# ═══════════════════════════════════════════════════════════════════════════════
 
-def log(msg: str, level: str = "INFO"):
+def log(msg: str, level: str = "INFO") -> None:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     line = f"[{ts}] [{level}] {msg}"
     print(line, flush=True)
@@ -62,237 +75,474 @@ def log(msg: str, level: str = "INFO"):
         pass
 
 
-def die(msg: str, code: int = 1):
-    log(f"FATAL: {msg}", "ERROR")
+# ═══════════════════════════════════════════════════════════════════════════════
+# LOCK (with stale-lock recovery)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _pid_alive(pid: int) -> bool:
+    """Cross-platform "is this process still running?"."""
+    if not pid or pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return False
+            return code.value == STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
     try:
-        from telegram_notify import notify_fatal
-        notify_fatal(msg)
-    except Exception:
-        pass
-    sys.exit(code)
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
 
 
 class PipelineLock:
-    def __init__(self, path: Path):
+    """Exclusive lock that survives crashes and never needs manual deletion."""
+
+    def __init__(self, path: Path, max_age_hours: float = 6.0):
         self.path = path
+        self.max_age_hours = float(max_age_hours)
         self.fd = None
 
-    def acquire(self) -> bool:
+    def _holder(self) -> dict:
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.fd = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
-            os.write(self.fd, str(os.getpid()).encode())
-            log(f"Lock acquired: {self.path}")
-            return True
-        except FileExistsError:
-            log("Another pipeline instance is running. Exiting.")
-            return False
+            raw = self.path.read_text(encoding="utf-8").strip()
+        except Exception:
+            return {}
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                return data
+            return {"pid": int(data)}
+        except Exception:
+            try:
+                return {"pid": int(raw.split()[0])}
+            except Exception:
+                return {}
 
-    def release(self):
+    def _is_stale(self, holder: dict) -> str | None:
+        pid = int(holder.get("pid") or 0)
+        if pid <= 0:
+            return "lock file has no usable pid"
+        if not _pid_alive(pid):
+            return f"pid {pid} is not running"
+        try:
+            age_h = (datetime.now().timestamp() - self.path.stat().st_mtime) / 3600
+            if age_h > self.max_age_hours:
+                return f"lock is {age_h:.1f}h old (limit {self.max_age_hours}h)"
+        except Exception:
+            pass
+        return None
+
+    def acquire(self) -> bool:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        for _ in range(2):
+            try:
+                self.fd = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
+                payload = json.dumps(
+                    {
+                        "pid": os.getpid(),
+                        "node": NODE,
+                        "started_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    }
+                )
+                os.write(self.fd, payload.encode("utf-8"))
+                log(f"Lock acquired: {self.path} (pid {os.getpid()})")
+                return True
+            except FileExistsError:
+                holder = self._holder()
+                reason = self._is_stale(holder)
+                if reason is None:
+                    log(
+                        f"Another run holds the lock (pid {holder.get('pid')}, "
+                        f"node {holder.get('node')}) — exiting cleanly.",
+                        "WARN",
+                    )
+                    return False
+                log(f"Removing stale lock: {reason}", "WARN")
+                try:
+                    self.path.unlink(missing_ok=True)
+                except Exception as e:
+                    log(f"Could not remove stale lock: {e}", "ERROR")
+                    return False
+        log("Could not acquire the pipeline lock.", "ERROR")
+        return False
+
+    def release(self) -> None:
         if self.fd is not None:
             try:
                 os.close(self.fd)
             except Exception:
                 pass
-            try:
-                self.path.unlink(missing_ok=True)
-            except Exception:
-                pass
+            self.fd = None
+        try:
+            if self.path.exists():
+                holder = self._holder()
+                if int(holder.get("pid") or 0) in (0, os.getpid()):
+                    self.path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
-def atomic_write_json(path: Path, data) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
-
-
-def load_json(path: Path, default):
-    if not path.exists():
-        return default
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception as e:
-        log(f"Failed to read {path.name}: {e}. Returning default.", "WARN")
-        return default
-
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONFIG + SUBPROCESS
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def load_config() -> dict:
     if not CONFIG_PATH.exists():
-        die(f"config.json not found at {CONFIG_PATH}")
+        raise RuntimeError(f"config.json not found at {CONFIG_PATH}")
     try:
         cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     except Exception as e:
-        die(f"config.json is invalid JSON: {e}")
+        raise RuntimeError(f"config.json is invalid JSON: {e}")
 
-    required = ["raw_dir", "output_dir", "short_seconds", "daily_shorts"]
-    for key in required:
+    for key in ("raw_dir", "output_dir", "short_seconds", "daily_shorts"):
         if key not in cfg:
-            die(f"config.json missing required key: {key}")
+            raise RuntimeError(f"config.json missing required key: {key}")
 
-    cfg.setdefault("short_seconds", 40)
     cfg.setdefault("daily_shorts", 5)
-    cfg.setdefault("frame_width", 1080)
-    cfg.setdefault("frame_height", 1920)
-    cfg.setdefault("fps", 30)
-    cfg.setdefault("preset", "fast")
-    cfg.setdefault("crf", 20)
-    cfg.setdefault("video_codec", "libx264")
-    cfg.setdefault("ffmpeg_threads", 0)
-    cfg.setdefault("filter_threads", 1)
-    cfg.setdefault("keep_audio", True)
-    cfg.setdefault("max_workers", 1)
-    cfg.setdefault("skip_files", [])
-    cfg.setdefault("channels", [])
+    cfg.setdefault("download_when_remaining_below", 2)
+    cfg.setdefault("max_lock_age_hours", 6)
+    cfg.setdefault("max_push_mb", 90)
+    cfg.setdefault("step_retries", 2)
+    cfg.setdefault("step_retry_delay_sec", 15)
     return cfg
 
 
-def raw_status(cfg: dict) -> dict:
-    skip = set(cfg.get("skip_files", []))
-    video_exts = {".mp4", ".mov", ".mkv", ".avi", ".mxf", ".ts", ".webm", ".m4v"}
-    if not RAW_DIR.exists():
-        return {"total": 0, "consumed": 0, "remaining": 0, "files": []}
-    raw_files = [f for f in RAW_DIR.iterdir()
-                 if f.is_file() and f.suffix.lower() in video_exts and f.name not in skip]
-    manifest = load_json(MANIFEST_PATH, [])
-    consumed = {e.get("source") for e in manifest if isinstance(e, dict)}
-    remaining = [f for f in raw_files if f.name not in consumed]
+def run_step(name: str, script: str, retries: int = 2, delay: int = 15) -> int:
+    """Run a sibling script with retries. Returns the final exit code."""
+    env = os.environ.copy()
+    env["PIPELINE_NODE"] = NODE
+    env["PYTHONUNBUFFERED"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    last = 1
+    for attempt in range(1, retries + 1):
+        log(f"RUN [{name}] attempt {attempt}/{retries}: {script}")
+        try:
+            last = subprocess.run(
+                [sys.executable, "-u", script], cwd=str(HERE), env=env
+            ).returncode
+        except Exception as e:
+            log(f"[{name}] could not start: {e}", "ERROR")
+            last = 1
+        if last == 0:
+            log(f"[{name}] ok")
+            return 0
+        log(f"[{name}] failed with exit {last}", "WARN")
+        if attempt < retries:
+            time.sleep(delay)
+    return last
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# GIT (never blocks the pipeline)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _git(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", *args], cwd=str(HERE), capture_output=True, text=True, timeout=120
+    )
+
+
+def git_sync() -> bool:
+    """Pull remote state written by the night node. Conflicts abort, not crash."""
+    if not (HERE / ".git").exists():
+        return False
+    r = _git("pull", "--rebase", "--autostash")
+    if r.returncode == 0:
+        return True
+    _git("rebase", "--abort")
+    log(f"git pull --rebase failed: {(r.stderr or r.stdout).strip()[:300]}", "WARN")
+    return False
+
+
+def git_push_changes(cfg: dict) -> bool:
+    if not (HERE / ".git").exists():
+        log("Not a git repository — skipping push.", "WARN")
+        return False
+
+    log("Pushing pending shorts + captions + state to GitHub...")
+    git_sync()
+
+    add = _git("add", "-A", "--", "shorts", "state")
+    if add.returncode != 0:
+        log(f"git add failed: {(add.stderr or add.stdout).strip()[:300]}", "WARN")
+        return False
+
+    # Never commit a runaway master file (GitHub rejects >100 MB).
+    max_mb = float(cfg.get("max_push_mb", 90))
+    staged = [p for p in _git("diff", "--cached", "--name-only").stdout.splitlines() if p.strip()]
+    oversized = []
+    for name in staged:
+        path = HERE / name
+        try:
+            if path.is_file() and path.stat().st_size > max_mb * 1024 * 1024:
+                oversized.append(name)
+        except OSError:
+            pass
+    if oversized:
+        _git("restore", "--staged", "--", *oversized)
+        log(
+            f"Left {len(oversized)} file(s) over {max_mb:.0f} MB out of the commit: "
+            f"{', '.join(oversized[:3])}",
+            "WARN",
+        )
+
+    if _git("diff", "--staged", "--quiet").returncode == 0:
+        log("No changes to push.")
+        return True
+
+    msg = f"chore({NODE}): pipeline {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
+    commit = _git("commit", "-m", msg)
+    if commit.returncode != 0:
+        log(f"git commit failed: {(commit.stderr or commit.stdout).strip()[:300]}", "WARN")
+        return False
+
+    for attempt in (1, 2):
+        push = _git("push")
+        if push.returncode == 0:
+            log("Shorts + captions + state pushed to GitHub.")
+            return True
+        log(f"git push failed (attempt {attempt}): {(push.stderr or push.stdout).strip()[:200]}", "WARN")
+        git_sync()
+
+    log("git push still failing — shorts stay local, the next run retries.", "WARN")
+    return False
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PIPELINE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def run_pipeline(cfg: dict, dry_run: bool, no_push: bool) -> tuple[int, dict]:
+    import pipeline_status as ps
+    from telegram_notify import (
+        notify_build_failed,
+        notify_download_failed,
+        notify_meta_failed,
+        notify_raw_empty,
+        notify_raw_fully_processed,
+        notify_raw_low,
+        notify_status_report,
+        notify_upload_started,
+    )
+
+    started = datetime.now(ps.IST)
+    steps: dict[str, str] = {}
+    daily_shorts = int(cfg.get("daily_shorts", 5))
+    raw_before = ps.raw_counts()
+    shorts_before = len(ps.pending_shorts())
+    posted_before = len(ps.posted_on(ps.ist_now().strftime("%Y-%m-%d")))
+
+    log("=== Local Pipeline Started ===")
+    log(
+        f"Raw: {raw_before['consumed']} consumed / {raw_before['remaining']} remaining "
+        f"/ {raw_before['total']} total · shorts waiting: {shorts_before}"
+    )
+
+    # command centre: everything both nodes have done, sent at the start of every run
+    ps.record_node_run("running", note="started", count_run=False)
+    status_text = ps.render(ps.snapshot())
+    print(status_text, flush=True)
+    notify_status_report(status_text)
+
+    if raw_before["remaining"] == 0:
+        notify_raw_empty()
+    elif raw_before["remaining"] <= 2:
+        notify_raw_low(raw_before["remaining"])
+
+    # ── 1. download only when the library is nearly empty ──
+    threshold = int(cfg.get("download_when_remaining_below", 2))
+    if raw_before["remaining"] < threshold:
+        if dry_run:
+            steps["download"] = "skipped (dry run)"
+        else:
+            log(f"Raw below {threshold} — topping up from channels...")
+            rc = run_step("download", "download_channels.py", retries=2, delay=20)
+            if rc == 0:
+                steps["download"] = "ok"
+            else:
+                steps["download"] = "failed"
+                notify_download_failed()
+                log("Continuing with whatever raw footage is already local.", "WARN")
+    else:
+        steps["download"] = "not needed"
+
+    # ── 2. build shorts ──
+    if dry_run:
+        steps["build"] = "skipped (dry run)"
+    else:
+        log(f"Building shorts (daily cap: {daily_shorts})...")
+        rc = run_step("build", "build_shorts_omf.py", retries=int(cfg.get("step_retries", 2)),
+                      delay=int(cfg.get("step_retry_delay_sec", 15)))
+        steps["build"] = "ok" if rc == 0 else "failed"
+        if rc != 0:
+            notify_build_failed()
+            return 1, _stats(ps, raw_before, shorts_before, posted_before, steps, started)
+
+    # ── 3. captions ──
+    if dry_run:
+        steps["meta"] = "skipped (dry run)"
+    else:
+        log("Generating captions via OpenRouter...")
+        rc = run_step("meta", "generate_meta.py", retries=2, delay=10)
+        steps["meta"] = "ok" if rc == 0 else "failed"
+        if rc != 0:
+            notify_meta_failed()
+
+    # ── 4. publish this node's due slots ──
+    if dry_run:
+        steps["upload"] = "skipped (dry run)"
+    else:
+        import upload_shorts
+
+        due = upload_shorts.due_plan(NODE)
+        if not due:
+            log("No slots due for this node right now.")
+            steps["upload"] = "nothing due"
+        else:
+            notify_upload_started(len(due), started.strftime("%Y-%m-%d"),
+                                  started.strftime("%H:%M"), node=NODE)
+            rc = run_step("upload", "upload_shorts.py", retries=2, delay=20)
+            steps["upload"] = "ok" if rc == 0 else "failed"
+            if rc != 0:
+                log("Local upload failed — the night node will retry these slots.", "WARN")
+
+    # ── 5. delete published shorts from disk ──
+    if dry_run:
+        steps["cleanup"] = "skipped (dry run)"
+    else:
+        rc = run_step("cleanup", "cleanup_shorts.py", retries=1)
+        steps["cleanup"] = "ok" if rc == 0 else "failed"
+
+    # ── 6. push what is left for the night node ──
+    if dry_run or no_push:
+        steps["push"] = "skipped"
+    else:
+        steps["push"] = "ok" if git_push_changes(cfg) else "failed"
+
+    after = ps.raw_counts()
+    waiting = len(ps.pending_shorts())
+    if after["remaining"] == 0 and waiting == 0:
+        notify_raw_fully_processed(len(ps.ledger()), daily_shorts)
+
+    stats = _stats(ps, raw_before, shorts_before, posted_before, steps, started)
+    log("=== Local Pipeline Finished ===")
+    return 0, stats
+
+
+def _stats(ps, raw_before: dict, shorts_before: int, posted_before: int,
+           steps: dict, started: datetime) -> dict:
+    now = datetime.now(ps.IST)
+    today = now.strftime("%Y-%m-%d")
+    posted_now = len(ps.posted_on(today))
+    # shorts waiting now + shorts we published (and deleted) = net built
+    built = max(0, len(ps.pending_shorts()) + (posted_now - posted_before) - shorts_before)
     return {
-        "total": len(raw_files),
-        "consumed": len(raw_files) - len(remaining),
-        "remaining": len(remaining),
-        "files": [f.name for f in remaining],
+        "node": NODE.upper(),
+        "started": started.strftime("%Y-%m-%d %H:%M IST"),
+        "finished": now.strftime("%Y-%m-%d %H:%M IST"),
+        "raw_before": raw_before["remaining"],
+        "raw_after": ps.raw_counts()["remaining"],
+        "waiting_shorts": len(ps.pending_shorts()),
+        "posted_today": posted_now,
+        "slots_total": len(ps.slots()),
+        "posted_this_run": max(0, posted_now - posted_before),
+        "steps": steps,
+        "built_estimate": built,
     }
 
 
-def run(cmd: list[str], cwd: Path = HERE, retries: int = MAX_RETRIES) -> int:
-    for attempt in range(1, retries + 1):
-        log(f"RUN (attempt {attempt}/{retries}): {' '.join(cmd)}")
-        result = subprocess.run(cmd, cwd=str(cwd))
-        if result.returncode == 0:
-            return 0
-        log(f"Command failed with exit {result.returncode}", "WARN")
-        if attempt < retries:
-            time.sleep(RETRY_DELAY_SEC)
-    return result.returncode
-
-
-def git_push_changes() -> None:
-    """Push shorts + captions + state to GitHub. Never crashes the pipeline."""
-    log("Pushing shorts + captions + state to GitHub...")
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-
-    run(["git", "add", "shorts/", "state/uploads.json"])
-
-    result = subprocess.run(["git", "diff", "--staged", "--quiet"], cwd=str(HERE))
-    if result.returncode == 0:
-        log("No changes to push.")
-        return
-
-    rc = run(["git", "commit", "-m", f"Local pipeline: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}"])
-    if rc != 0:
-        log("Git commit failed — skipping push.", "WARN")
-        return
-
-    rc = run(["git", "push"])
-    if rc != 0:
-        log("Git push failed — shorts remain local. Next run will retry.", "WARN")
-        return
-
-    log("✅ Shorts + captions + state pushed to GitHub.")
+def render_summary(stats: dict) -> str:
+    steps = stats["steps"]
+    step_line = " · ".join(f"{k} {v}" for k, v in steps.items())
+    return "\n".join(
+        [
+            "🏁 LOCAL RUN SUMMARY",
+            "─" * 34,
+            f"node     : {stats['node']}",
+            f"started  : {stats['started']}",
+            f"finished : {stats['finished']}",
+            "",
+            f"raw      : {stats['raw_before']} → {stats['raw_after']} remaining",
+            f"shorts   : {stats['waiting_shorts']} waiting on disk",
+            f"posted   : {stats['posted_this_run']} this run · "
+            f"{stats['posted_today']}/{stats['slots_total']} slots today",
+            "",
+            f"steps    : {step_line}",
+        ]
+    )
 
 
 def main() -> int:
-    lock = PipelineLock(LOCK_PATH)
-    if not lock.acquire():
+    ap = argparse.ArgumentParser(description="omfplays local (daytime) pipeline")
+    ap.add_argument("--dry-run", action="store_true", help="report only, change nothing")
+    ap.add_argument("--status", action="store_true", help="print the status block and exit")
+    ap.add_argument("--no-push", action="store_true", help="skip the git push")
+    ap.add_argument("--ignore-lock", action="store_true", help="run despite an existing lock")
+    args = ap.parse_args()
+
+    import pipeline_status as ps
+    from telegram_notify import notify_fatal, notify_run_summary
+
+    if args.status:
+        print(ps.render(ps.snapshot()))
         return 0
+
     try:
-        return _run()
+        cfg = load_config()
+    except RuntimeError as e:
+        log(f"FATAL: {e}", "ERROR")
+        notify_fatal(str(e))
+        return 2
+
+    lock = PipelineLock(LOCK_PATH, max_age_hours=cfg.get("max_lock_age_hours", 6))
+    if not args.ignore_lock:
+        if not lock.acquire():
+            return 0
+    else:
+        log("--ignore-lock: running without the lock", "WARN")
+
+    result = "ok"
+    rc = 0
+    stats: dict = {}
+    try:
+        rc, stats = run_pipeline(cfg, args.dry_run, args.no_push)
+        if rc != 0:
+            result = "failed"
+    except Exception as e:
+        result = "failed"
+        rc = 1
+        log(f"FATAL: {e}\n{traceback.format_exc()}", "ERROR")
+        notify_fatal(str(e))
     finally:
         lock.release()
+        if stats:
+            summary = render_summary(stats)
+            print(summary, flush=True)
+            notify_run_summary(summary)
+            try:
+                ps.record_node_run(
+                    result,
+                    note=f"{stats['posted_this_run']} posted / {stats['waiting_shorts']} waiting",
+                    built=stats.get("built_estimate", 0),
+                    posted=stats.get("posted_this_run", 0),
+                )
+                log(f"Node status recorded ({result}).")
+            except Exception as e:
+                log(f"Could not record node status: {e}", "WARN")
 
-
-def _run() -> int:
-    log("=== Local Pipeline Started ===")
-    cfg = load_config()
-    daily_shorts = int(cfg.get("daily_shorts", 5))
-
-    # ── 1. CHECK RAW STATUS ──
-    st = raw_status(cfg)
-    log(f"Raw: {st['consumed']} consumed / {st['remaining']} remaining / {st['total']} total")
-
-    from telegram_notify import (
-        notify_pipeline_started, notify_raw_empty, notify_raw_low,
-        notify_meta_generated, notify_upload_started,
-        notify_short_uploaded, notify_upload_complete, notify_raw_fully_processed,
-        notify_upload_failed, notify_download_failed, notify_build_failed,
-        notify_meta_failed,
-    )
-
-    ist_now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    date_str = datetime.now().strftime("%Y-%m-%d")
-
-    notify_pipeline_started(st, date_str, ist_now)
-
-    # Alert if raw critically low
-    if st["remaining"] == 0:
-        notify_raw_empty()
-    elif st["remaining"] <= 2:
-        notify_raw_low(st["remaining"])
-
-    # ── 2. DOWNLOAD ONLY IF NEEDED ──
-    if st["remaining"] < 2:
-        log("Raw is low/empty → downloading new videos...")
-        rc = run([sys.executable, "download_channels.py"])
-        if rc != 0:
-            log("Download step failed.", "ERROR")
-            notify_download_failed()
-            return 1
-        log("Download complete.")
-        st = raw_status(cfg)
-        log(f"After download: {st['remaining']} remaining")
-
-    # ── 3. BUILD SHORTS (capped at daily_shorts) ──
-    log(f"Building shorts (daily cap: {daily_shorts})...")
-    rc = run([sys.executable, "build_shorts_omf.py"])
-    if rc != 0:
-        log("Build step failed.", "ERROR")
-        notify_build_failed()
-        return 1
-
-    # ── 3.5. GENERATE META (OpenRouter titles/descriptions) ──
-    log("Generating titles/descriptions via OpenRouter...")
-    rc = run([sys.executable, "generate_meta.py"])
-    if rc != 0:
-        log("Meta generation failed — continuing with shorts anyway.", "WARN")
-    notify_meta_failed()
-
-    # ── 4. LOCAL DAYTIME UPLOAD (only DUE slots, no --now) ──
-    log("Uploading shorts locally during daytime (schedule-aware)...")
-    rc = run([sys.executable, "upload_shorts.py"])  # NO --now — only due slots
-    if rc != 0:
-        log("Local upload step failed — shorts will go to night upload.", "WARN")
-
-    # ── 4.5. CLEANUP POSTED SHORTS FROM DISK ──
-    log("Cleaning up posted shorts from disk...")
-    run([sys.executable, "cleanup_shorts.py"])
-
-    # ── 5. RAW DONE ALERT ──
-    st = raw_status(cfg)
-    shorts_count = len(list(SHORTS_DIR.glob("s*.mp4"))) if SHORTS_DIR.exists() else 0
-    if st["remaining"] == 0:
-        notify_raw_fully_processed(shorts_count, daily_shorts)
-    else:
-        log(f"Raw clips remaining: {st['remaining']} — will continue next run.")
-
-    # ── 6. PUSH REMAINING UNPOSTED SHORTS TO GITHUB (night backup) ──
-    git_push_changes()
-
-    log("=== Local Pipeline Finished ===")
-    return 0
+    return rc
 
 
 if __name__ == "__main__":

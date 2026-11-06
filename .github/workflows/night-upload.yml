@@ -1,20 +1,30 @@
 name: Night Upload & Ops
 
+# GitHub owns the four night slots (see slots.json); the local PC owns 08:30.
+# Ownership is enforced in upload_shorts.py, so a stray run can never
+# double-post a slot the other node already published.
 on:
   schedule:
-    - cron: '*/30 14-23,0-3 * * *'
+    - cron: '0 14 * * *'    # 19:30 IST
+    - cron: '0 17 * * *'    # 22:30 IST
+    - cron: '30 19 * * *'   # 01:00 IST (next day)
+    - cron: '30 23 * * *'   # 05:00 IST (next day)
   workflow_dispatch:
     inputs:
       mode:
-        description: 'Run mode'
+        description: 'What to run'
         required: false
-        default: 'debug'
+        default: 'status'
         type: choice
         options:
-          - debug
-          - upload
           - status
+          - upload
+          - debug
           - cleanup
+
+concurrency:
+  group: night-ops
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -22,136 +32,141 @@ permissions:
 env:
   PYTHON_VERSION: '3.11'
   TZ: 'Asia/Kolkata'
+  PIPELINE_NODE: github
+  PYTHONUNBUFFERED: '1'
 
 jobs:
   night-ops:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 
     steps:
-      # ──────────────────────────────────────────────
-      # 1. Checkout repository
-      # ──────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GH_PAT }}
+          token: ${{ secrets.GH_PAT || github.token }}
           fetch-depth: 0
 
-      # ──────────────────────────────────────────────
-      # 2. Show repo structure (DEBUG)
-      # ──────────────────────────────────────────────
-      - name: Show repo files
-        run: |
-          echo "=== Files in repo ==="
-          find . -type f -not -path './.git/*' | sort
-          echo ""
-          echo "=== Shorts folder ==="
-          ls -la shorts/ 2>/dev/null || echo "No shorts/ folder"
-          echo ""
-          echo "=== State folder ==="
-          ls -la state/ 2>/dev/null || echo "No state/ folder"
-
-      # ──────────────────────────────────────────────
-      # 3. Setup Python + deps
-      # ──────────────────────────────────────────────
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
+          cache-dependency-path: requirements.txt
 
-      - name: Install dependencies
+      - name: Install ffmpeg
         run: |
-          pip install --upgrade pip
-          pip install instagrapi yt-dlp python-dotenv requests --break-system-packages
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -version | head -1
 
-      # ──────────────────────────────────────────────
-      # 4. Restore credentials from secrets
-      # ──────────────────────────────────────────────
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
       - name: Restore credentials
         env:
           PUBLISHER_AUTH: ${{ secrets.PUBLISHER_AUTH }}
           PUBLISHER_COOKIES: ${{ secrets.PUBLISHER_COOKIES }}
           PUBLISHER_SESSION: ${{ secrets.PUBLISHER_SESSION }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_ALLOWED_USERS: ${{ secrets.TELEGRAM_ALLOWED_USERS }}
         run: |
-          echo "=== Checking secrets ==="
-          if [ -z "$PUBLISHER_AUTH" ]; then echo "⚠️ PUBLISHER_AUTH not set"; fi
-          if [ -z "$PUBLISHER_COOKIES" ]; then echo "⚠️ PUBLISHER_COOKIES not set"; fi
-          if [ -z "$TELEGRAM_BOT_TOKEN" ]; then echo "⚠️ TELEGRAM_BOT_TOKEN not set"; fi
-          if [ -z "$TELEGRAM_CHAT_ID" ]; then echo "⚠️ TELEGRAM_CHAT_ID not set"; fi
+          python - <<'PY'
+          import os
+          from pathlib import Path
 
-          echo "$PUBLISHER_AUTH" > publisher_auth.json
-          echo "$PUBLISHER_COOKIES" > publisher_cookies.json
-          echo "$PUBLISHER_SESSION" > publisher_session.json
-          cat > .env <<'EOF'
-          TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
-          TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
-          TELEGRAM_ALLOWED_USERS=${TELEGRAM_ALLOWED_USERS}
-          EOF
+          files = {
+              "publisher_auth.json": os.getenv("PUBLISHER_AUTH", ""),
+              "publisher_cookies.json": os.getenv("PUBLISHER_COOKIES", ""),
+              "publisher_session.json": os.getenv("PUBLISHER_SESSION", ""),
+          }
+          for name, raw in files.items():
+              if raw.strip():
+                  Path(name).write_text(raw, encoding="utf-8")
+                  print(f"restored {name} ({len(raw)} bytes)")
+              else:
+                  print(f"WARNING: secret for {name} is not set")
 
-      # ──────────────────────────────────────────────
-      # 5. Run pipeline (debug mode by default)
-      # ──────────────────────────────────────────────
+          env_lines = [
+              f"TELEGRAM_BOT_TOKEN={os.getenv('TELEGRAM_BOT_TOKEN', '')}",
+              f"TELEGRAM_CHAT_ID={os.getenv('TELEGRAM_CHAT_ID', '')}",
+              f"TELEGRAM_ALLOWED_USERS={os.getenv('TELEGRAM_ALLOWED_USERS', '')}",
+              f"OPENROUTER_API_KEY={os.getenv('OPENROUTER_API_KEY', '')}",
+          ]
+          Path(".env").write_text("\n".join(env_lines) + "\n", encoding="utf-8")
+          PY
+
+      - name: Repo state
+        run: |
+          echo "mode: ${MODE:-status}"
+          ls -la shorts/ 2>/dev/null | head -20 || echo "no shorts/ folder"
+          ls -la state/ 2>/dev/null || echo "no state/ folder"
+          du -sh shorts 2>/dev/null || true
+        env:
+          MODE: ${{ github.event.inputs.mode || 'status' }}
+
+      - name: Report node status (start)
+        run: python pipeline_status.py --start --note "workflow ${{ github.event.inputs.mode || 'schedule' }}" --notify --quiet || true
+
       - name: Run pipeline
         id: run
         env:
-          MODE: ${{ github.event.inputs.mode || 'debug' }}
+          MODE: ${{ github.event.inputs.mode || 'status' }}
         run: |
-          MODE="${MODE:-debug}"
-          echo "=== Mode: $MODE ==="
+          MODE="${MODE:-status}"
+          case "$MODE" in
+            upload)
+              echo "posting every due slot owned by github"
+              python upload_shorts.py || echo "::warning::upload step exited non-zero"
+              python cleanup_shorts.py || true
+              ;;
+            cleanup)
+              python cleanup_shorts.py
+              ;;
+            debug)
+              python debug_login.py || true
+              python upload_shorts.py --dry-run || true
+              ;;
+            status|*)
+              python pipeline_status.py
+              ;;
+          esac
 
-          if [ "$MODE" = "debug" ]; then
-            echo "🔍 DEBUG MODE - No upload performed"
-            echo "=== Python version ==="
-            python --version
-            echo "=== Files check ==="
-            ls -la *.py *.json 2>/dev/null || true
-            echo "=== Instagram login test ==="
-            python debug_login.py || true
-          elif [ "$MODE" = "upload" ]; then
-            echo "🚀 Running night upload..."
-            python upload_shorts.py || echo "⚠️ Upload step exited non-zero"
-          elif [ "$MODE" = "status" ]; then
-            echo "📊 Running status check..."
-            python telegram_bot.py --status || true
-          elif [ "$MODE" = "cleanup" ]; then
-            echo "🧹 Running cleanup..."
-            python cleanup_shorts.py || true
-          else
-            echo "Unknown mode: $MODE"
-            exit 1
-          fi
-
-      # ──────────────────────────────────────────────
-      # 6. Commit state changes
-      # ──────────────────────────────────────────────
-      - name: Commit state changes
-        if: github.event.inputs.mode == 'upload' || github.event_name == 'schedule'
+      - name: Commit state + shorts
+        if: github.event.inputs.mode == 'upload' || github.event.inputs.mode == 'cleanup' || github.event_name == 'schedule'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          if ! git diff --staged --quiet; then
-            git commit -m "🤖 Night ops: $(date -u +'%Y-%m-%d %H:%M UTC')"
-            git push
-            echo "✅ State committed and pushed"
+          git add -A -- shorts state
+          if git diff --staged --quiet; then
+            echo "no repository changes"
           else
-            echo "No changes to commit"
+            git commit -m "chore(github): night ops $(date -u +'%Y-%m-%d %H:%M UTC')"
+            for attempt in 1 2 3; do
+              if git push; then echo "pushed"; break; fi
+              echo "push failed (attempt $attempt) — rebasing and retrying"
+              git pull --rebase --autostash || git rebase --abort || true
+              sleep 5
+            done
           fi
 
-      # ──────────────────────────────────────────────
-      # 7. Telegram summary (always runs)
-      # ──────────────────────────────────────────────
-      - name: Send Telegram summary
+      - name: Report final status
         if: always()
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          MODE: ${{ github.event.inputs.mode || 'debug' }}
-          JOB_STATUS: ${{ job.status }}
         run: |
-          python debug_telegram.py || true
+          python pipeline_status.py \
+            --record \
+            --result "${{ job.status }}" \
+            --note "${{ github.event.inputs.mode || 'schedule' }}" \
+            --notify --quiet || true
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A -- state/nodes.json
+          if ! git diff --staged --quiet; then
+            git commit -m "chore(github): node status ${{ job.status }}"
+            git push || true
+          fi
