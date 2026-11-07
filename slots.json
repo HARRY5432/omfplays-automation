@@ -2,29 +2,29 @@
   "timezone": "Asia/Kolkata",
   "slots": [
     {
+      "time": "12:30",
+      "label": "Lunch Break + Midday",
+      "node": "github"
+    },
+    {
+      "time": "15:30",
+      "label": "Afternoon Commute + Relax",
+      "node": "github"
+    },
+    {
       "time": "19:30",
-      "label": "US East Lunch + EU Afternoon",
+      "label": "Evening PEAK Engagement",
       "node": "github"
     },
     {
-      "time": "22:30",
-      "label": "US East Prime Evening + EU Night",
+      "time": "21:30",
+      "label": "Late-Night Wind-Down",
       "node": "github"
     },
     {
-      "time": "01:00",
-      "label": "US East Late Night + AU Morning",
+      "time": "08:00",
+      "label": "Morning Check-In + Commute",
       "node": "github"
-    },
-    {
-      "time": "05:00",
-      "label": "US East Early Morning + Asia Start",
-      "node": "github"
-    },
-    {
-      "time": "08:30",
-      "label": "US East Morning + India Night",
-      "node": "local"
     }
   ]
 }
