@@ -129,7 +129,8 @@ def notify_pipeline_started(raw_status: dict, date_str: str, ist_now: str, node:
         f"remaining: {remaining}",
         f"progress : {_progress(consumed, max(1, total))} {_pct(consumed, max(1, total))}",
         "",
-        "pipelines: download > build > meta > upload > push",
+        "pipelines: build > meta > upload > push",
+        "raw       : added by hand, never downloaded automatically",
     ]
     return _pre(_box("LOCAL PIPELINE STARTED", lines, "🌅"))
 
@@ -138,7 +139,12 @@ def notify_raw_empty() -> bool:
     return _pre(
         _box(
             "RAW EMPTY",
-            ["no raw clips left to process", "", "downloading new videos now..."],
+            [
+                "raw/ has no videos at all",
+                "nothing will be downloaded automatically",
+                "",
+                "add footage by hand when ready",
+            ],
             "📭",
         )
     )
@@ -147,11 +153,36 @@ def notify_raw_empty() -> bool:
 def notify_raw_low(count: int) -> bool:
     return _pre(
         _box(
-            "RAW LOW",
-            [f"only {count} raw clip(s) remaining", "", "topping up from channels now..."],
+            "RAW RUNNING OUT",
+            [
+                f"only {count} clip(s) left to slice",
+                "",
+                "when they run out the pipeline stops building and alerts you",
+                "nothing is downloaded automatically — add footage by hand",
+            ],
             "📉",
         )
     )
+
+
+def notify_raw_slices_exhausted(rows: list) -> bool:
+    """Every clip has been sliced out of the raw footage: a human must add more."""
+    lines = ["every clip has been sliced out of the raw videos", ""]
+    for row in (rows or [])[:6]:
+        name = str(row.get("file", "?"))
+        if len(name) > 34:
+            name = name[:31] + "..."
+        lines.append(name)
+        lines.append(
+            f"  {row.get('clips_used', 0)}/{row.get('clips_total', 0)} clips used · 0 left"
+        )
+    lines += [
+        "",
+        "shorts already built keep posting on schedule.",
+        "add new raw videos to raw/ when you are ready.",
+        "nothing is downloaded automatically.",
+    ]
+    return _pre(_box("RAW EXHAUSTED — ADD FOOTAGE", lines, "🪫"))
 
 
 def notify_short_built(short_name: str, index: int, total: int, title: str = "") -> bool:

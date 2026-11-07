@@ -25,6 +25,7 @@
   "download_format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best",
   "downloads_per_run": 1,
   "download_scan_items": 10,
+  "auto_download": false,
   "download_when_remaining_below": 2,
   "max_posts_per_run": 2,
   "slot_due_window_min": 360,

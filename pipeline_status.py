@@ -174,23 +174,112 @@ def ledger() -> dict:
     return load_json(UPLOADS_PATH, {})
 
 
+RAW_INDEX_PATH = STATE_DIR / "raw_index.json"
+
+
+def _probe_duration(path: Path, cache: dict) -> float:
+    """Length of a raw video in seconds, cached by name+size+mtime."""
+    try:
+        st = path.stat()
+    except OSError:
+        return 0.0
+    key = f"{path.name}:{st.st_size}:{int(st.st_mtime)}"
+    cached = cache.get(key)
+    if isinstance(cached, (int, float)) and cached > 0:
+        return float(cached)
+    dur = 0.0
+    try:
+        r = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=nw=1:nk=1", str(path),
+            ],
+            capture_output=True, text=True, timeout=60,
+        )
+        dur = float((r.stdout or "").strip() or 0)
+    except Exception:
+        dur = 0.0
+    if dur > 0:
+        cache[key] = round(dur, 2)
+    return dur
+
+
+def raw_inventory(files: list[Path], manifest: list[dict], short_secs: int) -> list[dict]:
+    """How much footage is LEFT in each raw video, in whole clips.
+
+    A raw video is not "used up" because a clip was cut from it: the build
+    slices 40 s windows off the front, so one long video yields many clips.
+    clips_left is what the operator needs before deciding to add footage.
+    """
+    used_by_source: dict[str, int] = {}
+    for entry in manifest:
+        if isinstance(entry, dict) and entry.get("source"):
+            src = str(entry["source"])
+            used_by_source[src] = used_by_source.get(src, 0) + 1
+
+    cache = load_json(RAW_INDEX_PATH, {})
+    if not isinstance(cache, dict):
+        cache = {}
+    fresh_cache: dict = {}
+    rows = []
+    for f in files:
+        dur = _probe_duration(f, cache)
+        try:
+            st = f.stat()
+            key = f"{f.name}:{st.st_size}:{int(st.st_mtime)}"
+            if key in cache:
+                fresh_cache[key] = cache[key]
+        except OSError:
+            pass
+        total = int(dur // short_secs) if dur > 0 and short_secs > 0 else 0
+        used = int(used_by_source.get(f.name, 0))
+        rows.append(
+            {
+                "file": f.name,
+                "duration_min": round(dur / 60, 1) if dur > 0 else None,
+                "clips_total": total,
+                "clips_used": used,
+                "clips_left": max(0, total - used),
+            }
+        )
+    if fresh_cache != cache:
+        atomic_write_json(RAW_INDEX_PATH, fresh_cache)
+    rows.sort(key=lambda r: (r["clips_left"], r["file"]))
+    return rows
+
+
 def raw_counts() -> dict:
+    cfg = load_config()
+    short_secs = int(cfg.get("short_seconds", 40) or 40)
+    manifest = load_json(MANIFEST_PATH, [])
+    if not isinstance(manifest, list):
+        manifest = []
+    empty = {
+        "total": 0, "consumed": 0, "remaining": 0, "files": [],
+        "slices": [], "slices_total": 0, "slices_used": 0, "slices_left": 0,
+    }
     if not RAW_DIR.exists():
-        return {"total": 0, "consumed": 0, "remaining": 0, "files": []}
-    skip = set(load_config().get("skip_files", []))
+        return empty
+    skip = set(cfg.get("skip_files", []))
     files = [
         f for f in RAW_DIR.iterdir()
         if f.is_file() and f.suffix.lower() in VIDEO_EXTS and f.name not in skip
     ]
     consumed = {
-        e.get("source") for e in load_json(MANIFEST_PATH, []) if isinstance(e, dict)
+        e.get("source") for e in manifest if isinstance(e, dict)
     }
     remaining = [f for f in files if f.name not in consumed]
+    slices = raw_inventory(files, manifest, short_secs)
     return {
         "total": len(files),
         "consumed": len(files) - len(remaining),
         "remaining": len(remaining),
         "files": sorted(f.name for f in remaining),
+        "slices": slices,
+        "slices_total": sum(r["clips_total"] for r in slices),
+        "slices_used": sum(r["clips_used"] for r in slices),
+        "slices_left": sum(r["clips_left"] for r in slices),
     }
 
 
@@ -378,10 +467,18 @@ def attention(snap: dict) -> list[str]:
         elif row["state"] == "due":
             items.append(f"slot {row['time']} ({row['owner']}) is due now — waiting for {row['owner']}")
 
-    if snap["raw"]["remaining"] == 0:
-        items.append("no raw footage left — the next run has to download first")
-    elif snap["raw"]["remaining"] <= 2:
-        items.append(f"raw library low: {snap['raw']['remaining']} clip(s) left")
+    slices_left = int(snap["raw"].get("slices_left") or 0)
+    if snap["raw"]["total"] == 0:
+        items.append(
+            "raw/ is empty — add footage by hand, the pipeline never downloads on its own"
+        )
+    elif slices_left == 0:
+        items.append(
+            "RAW EXHAUSTED — every clip has been sliced out of the raw videos; "
+            "add new footage (nothing is downloaded automatically)"
+        )
+    elif slices_left <= 5:
+        items.append(f"raw is running out: only {slices_left} clip(s) left to slice")
 
     if snap["disk_free_gb"] < LOW_DISK_GB:
         items.append(f"disk is low: {snap['disk_free_gb']} GB free")
@@ -528,13 +625,30 @@ def render(snap: dict) -> str:
             lines.append(f"  {owner.upper():6} {', '.join(times)} IST")
 
     raw = snap["raw"]
+    slices_left = int(raw.get("slices_left") or 0)
     lines += [
         "",
         "▸ LIBRARY",
         f"  raw      {raw['remaining']} left · {raw['consumed']} consumed · {raw['total']} total",
         f"  shorts   {snap['shorts']['pending']} waiting on disk",
         f"  manifest {manifest['total']} short(s) tracked",
+        "",
+        f"▸ RAW → REELS   {slices_left} of {raw.get('slices_total', 0)} clips left to slice",
     ]
+    if not raw.get("slices"):
+        lines.append("  (no raw videos on disk — add footage by hand)")
+    for row in raw.get("slices", [])[:8]:
+        name = row["file"]
+        if len(name) > 38:
+            name = name[:35] + "..."
+        mins = f"{row['duration_min']:.0f}m" if row.get("duration_min") else "?m"
+        flag = "✖" if row["clips_left"] == 0 else ("⚠" if row["clips_left"] <= 2 else "·")
+        lines.append(
+            f"  {flag} {name}  {mins} · {row['clips_used']}/{row['clips_total']} used"
+            f" · {row['clips_left']} left"
+        )
+    if raw.get("total") and slices_left == 0:
+        lines.append("  ⚠ nothing left to slice — add new raw footage")
 
     lock = snap["lock"]
     git = snap.get("git", {})

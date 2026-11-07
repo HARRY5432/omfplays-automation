@@ -4,7 +4,7 @@
 What it does, in order:
   1. take the run lock (steals it if the previous holder died)
   2. report raw/shots status to Telegram (command centre block)
-  3. download only when the raw library is nearly empty
+  3. report how many clips are left in each raw video (never download on its own)
   4. build vertical shorts (capped by config.daily_shorts)
   5. generate OpenRouter captions ("Day XX of Modern Warfare")
   6. publish the slots OWNED BY THIS NODE that are due
@@ -324,7 +324,7 @@ def git_push_changes(cfg: dict) -> bool:
 # PIPELINE
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def run_pipeline(cfg: dict, dry_run: bool, no_push: bool) -> tuple[int, dict]:
+def run_pipeline(cfg: dict, dry_run: bool, no_push: bool, download: bool = False) -> tuple[int, dict]:
     import pipeline_status as ps
     from telegram_notify import (
         notify_build_failed,
@@ -334,6 +334,7 @@ def run_pipeline(cfg: dict, dry_run: bool, no_push: bool) -> tuple[int, dict]:
         notify_raw_fully_processed,
         notify_raw_low,
         notify_status_report,
+        notify_raw_slices_exhausted,
         notify_upload_started,
     )
 
@@ -356,27 +357,36 @@ def run_pipeline(cfg: dict, dry_run: bool, no_push: bool) -> tuple[int, dict]:
     print(status_text, flush=True)
     notify_status_report(status_text)
 
-    if raw_before["remaining"] == 0:
+    slices_left = int(raw_before.get("slices_left") or 0)
+    if raw_before.get("total", 0) and slices_left == 0:
+        # The library is used up: say so loudly and leave the decision to a human.
+        notify_raw_slices_exhausted(raw_before.get("slices", []))
+        log("Raw exhausted: 0 clips left to slice — no download will be attempted.", "WARN")
+    elif raw_before["remaining"] == 0:
         notify_raw_empty()
-    elif raw_before["remaining"] <= 2:
-        notify_raw_low(raw_before["remaining"])
+    elif slices_left <= 5:
+        notify_raw_low(slices_left)
 
-    # ── 1. download only when the library is nearly empty ──
-    threshold = int(cfg.get("download_when_remaining_below", 2))
-    if raw_before["remaining"] < threshold:
+    # ── 1. raw top-up — MANUAL ONLY ──
+    # Slicing raw footage is supposed to run dry; when it does, the run reports
+    # it and stops building from what is left. Downloading on its own was wrong:
+    # footage choice belongs to the operator, so this only happens with --download
+    # or "auto_download": true in config.json.
+    auto = bool(cfg.get("auto_download", False))
+    if download or auto:
         if dry_run:
             steps["download"] = "skipped (dry run)"
         else:
-            log(f"Raw below {threshold} — topping up from channels...")
+            log(f"Manual top-up requested — downloading {cfg.get('downloads_per_run', 1)} video(s)...")
             rc = run_step("download", "download_channels.py", retries=2, delay=20)
             if rc == 0:
-                steps["download"] = "ok"
+                steps["download"] = "ok (manual)"
             else:
                 steps["download"] = "failed"
                 notify_download_failed()
                 log("Continuing with whatever raw footage is already local.", "WARN")
     else:
-        steps["download"] = "not needed"
+        steps["download"] = "off (manual only)"
 
     # ── 2. build shorts ──
     if dry_run:
@@ -490,6 +500,11 @@ def main() -> int:
     ap.add_argument("--status", action="store_true", help="print the status block and exit")
     ap.add_argument("--no-push", action="store_true", help="skip the git push")
     ap.add_argument("--ignore-lock", action="store_true", help="run despite an existing lock")
+    ap.add_argument(
+        "--download",
+        action="store_true",
+        help="manually top up raw footage before building (never happens on its own)",
+    )
     args = ap.parse_args()
 
     import pipeline_status as ps
@@ -517,7 +532,7 @@ def main() -> int:
     rc = 0
     stats: dict = {}
     try:
-        rc, stats = run_pipeline(cfg, args.dry_run, args.no_push)
+        rc, stats = run_pipeline(cfg, args.dry_run, args.no_push, args.download)
         if rc != 0:
             result = "failed"
     except Exception as e:
