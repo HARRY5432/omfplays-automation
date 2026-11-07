@@ -43,5 +43,15 @@
     "media_code": "DfU2-84s3QL",
     "trial": false,
     "posted_at": "2026-11-04T16:14:02.061197+00:00"
+  },
+  "2026-11-07#4": {
+    "status": "posted",
+    "slot": "08:30",
+    "short": "s20261106_001",
+    "node": "local",
+    "media_pk": "4024912330141775796",
+    "media_code": "DfbXHB6MLe0",
+    "trial": false,
+    "posted_at": "2026-11-07T04:49:45+00:00"
   }
 }
