@@ -255,9 +255,13 @@ def raw_counts() -> dict:
     manifest = load_json(MANIFEST_PATH, [])
     if not isinstance(manifest, list):
         manifest = []
+    per_batch = max(1, int(cfg.get("daily_shorts", 5) or 5))
     empty = {
         "total": 0, "consumed": 0, "remaining": 0, "files": [],
         "slices": [], "slices_total": 0, "slices_used": 0, "slices_left": 0,
+        "reels_total": 0, "reels_used": 0, "reels_left": 0,
+        "footage_min": 0.0, "batches_left": 0, "per_batch": per_batch,
+        "short_secs": short_secs, "dir": RAW_DIR.exists(),
     }
     if not RAW_DIR.exists():
         return empty
@@ -271,15 +275,28 @@ def raw_counts() -> dict:
     }
     remaining = [f for f in files if f.name not in consumed]
     slices = raw_inventory(files, manifest, short_secs)
+    # Everything below is counted in REELS of short_secs: one raw video holds
+    # duration//short_secs reels, minus the ones already sliced out of it.
+    reels_total = sum(r["clips_total"] for r in slices)
+    reels_used = sum(r["clips_used"] for r in slices)
+    reels_left = sum(r["clips_left"] for r in slices)
     return {
         "total": len(files),
         "consumed": len(files) - len(remaining),
         "remaining": len(remaining),
         "files": sorted(f.name for f in remaining),
         "slices": slices,
-        "slices_total": sum(r["clips_total"] for r in slices),
-        "slices_used": sum(r["clips_used"] for r in slices),
-        "slices_left": sum(r["clips_left"] for r in slices),
+        "slices_total": reels_total,
+        "slices_used": reels_used,
+        "slices_left": reels_left,
+        "reels_total": reels_total,
+        "reels_used": reels_used,
+        "reels_left": reels_left,
+        "footage_min": round(sum((r.get("duration_min") or 0) for r in slices), 1),
+        "batches_left": reels_left // per_batch,
+        "per_batch": per_batch,
+        "short_secs": short_secs,
+        "dir": RAW_DIR.exists(),
     }
 
 
@@ -467,18 +484,27 @@ def attention(snap: dict) -> list[str]:
         elif row["state"] == "due":
             items.append(f"slot {row['time']} ({row['owner']}) is due now — waiting for {row['owner']}")
 
-    slices_left = int(snap["raw"].get("slices_left") or 0)
-    if snap["raw"]["total"] == 0:
+    raw = snap["raw"]
+    slices_left = int(raw.get("slices_left") or 0)
+    per_batch = max(1, int(raw.get("per_batch") or 5))
+    secs = int(raw.get("short_secs") or 40)
+    if not raw.get("dir"):
+        # raw/ only exists on the PC; the night node must not cry "raw empty"
+        pass
+    elif raw["total"] == 0:
         items.append(
             "raw/ is empty — add footage by hand, the pipeline never downloads on its own"
         )
     elif slices_left == 0:
         items.append(
-            "RAW EXHAUSTED — every clip has been sliced out of the raw videos; "
+            f"RAW EXHAUSTED — 0 reels of {secs}s left in the raw videos; "
             "add new footage (nothing is downloaded automatically)"
         )
-    elif slices_left <= 5:
-        items.append(f"raw is running out: only {slices_left} clip(s) left to slice")
+    elif slices_left <= per_batch:
+        items.append(
+            f"raw is running out: {slices_left} reels of {secs}s left "
+            f"({slices_left / per_batch:.1f} batches of {per_batch})"
+        )
 
     if snap["disk_free_gb"] < LOW_DISK_GB:
         items.append(f"disk is low: {snap['disk_free_gb']} GB free")
@@ -626,17 +652,25 @@ def render(snap: dict) -> str:
 
     raw = snap["raw"]
     slices_left = int(raw.get("slices_left") or 0)
+    secs = int(raw.get("short_secs") or 40)
+    per_batch = max(1, int(raw.get("per_batch") or 5))
+    footage_h = (raw.get("footage_min") or 0) / 60
     lines += [
         "",
         "▸ LIBRARY",
-        f"  raw      {raw['remaining']} left · {raw['consumed']} consumed · {raw['total']} total",
+        f"  raw      {footage_h:.1f}h of footage in {raw['total']} video(s)",
         f"  shorts   {snap['shorts']['pending']} waiting on disk",
         f"  manifest {manifest['total']} short(s) tracked",
         "",
-        f"▸ RAW → REELS   {slices_left} of {raw.get('slices_total', 0)} clips left to slice",
+        f"▸ RAW → REELS   {slices_left} reels of {secs}s left",
+        f"  of {raw.get('slices_total', 0)} total · {raw.get('slices_used', 0)} already sliced"
+        f" · ≈{raw.get('batches_left', 0)} batches of {per_batch}",
     ]
     if not raw.get("slices"):
-        lines.append("  (no raw videos on disk — add footage by hand)")
+        if raw.get("dir"):
+            lines.append("  (no raw videos on disk — add footage by hand)")
+        else:
+            lines.append("  (raw/ lives on the PC — this node does not build)")
     for row in raw.get("slices", [])[:8]:
         name = row["file"]
         if len(name) > 38:
@@ -644,11 +678,11 @@ def render(snap: dict) -> str:
         mins = f"{row['duration_min']:.0f}m" if row.get("duration_min") else "?m"
         flag = "✖" if row["clips_left"] == 0 else ("⚠" if row["clips_left"] <= 2 else "·")
         lines.append(
-            f"  {flag} {name}  {mins} · {row['clips_used']}/{row['clips_total']} used"
-            f" · {row['clips_left']} left"
+            f"  {flag} {name}  {mins} · {row['clips_total']} reels · "
+            f"{row['clips_used']} used · {row['clips_left']} left"
         )
-    if raw.get("total") and slices_left == 0:
-        lines.append("  ⚠ nothing left to slice — add new raw footage")
+    if raw.get("dir") and raw.get("total") and slices_left == 0:
+        lines.append(f"  ⚠ 0 reels left to slice — add new raw footage")
 
     lock = snap["lock"]
     git = snap.get("git", {})

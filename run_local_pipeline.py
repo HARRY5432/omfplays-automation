@@ -4,7 +4,7 @@
 What it does, in order:
   1. take the run lock (steals it if the previous holder died)
   2. report raw/shots status to Telegram (command centre block)
-  3. report how many clips are left in each raw video (never download on its own)
+  3. report how many short_seconds reels are left in the raw footage (never download)
   4. build vertical shorts (capped by config.daily_shorts)
   5. generate OpenRouter captions ("Day N Reel 1..5 of Modern Warfare")
   6. publish the slots OWNED BY THIS NODE that are due
@@ -330,6 +330,7 @@ def run_pipeline(cfg: dict, dry_run: bool, no_push: bool, download: bool = False
         notify_build_failed,
         notify_download_failed,
         notify_meta_failed,
+        notify_raw_budget,
         notify_raw_empty,
         notify_raw_fully_processed,
         notify_raw_low,
@@ -347,8 +348,9 @@ def run_pipeline(cfg: dict, dry_run: bool, no_push: bool, download: bool = False
 
     log("=== Local Pipeline Started ===")
     log(
-        f"Raw: {raw_before['consumed']} consumed / {raw_before['remaining']} remaining "
-        f"/ {raw_before['total']} total · shorts waiting: {shorts_before}"
+        f"Raw: {raw_before['total']} video(s) · {raw_before['slices_used']} reels sliced · "
+        f"{raw_before['slices_left']} reels of {raw_before.get('short_secs', 40)}s left · "
+        f"shorts waiting: {shorts_before}"
     )
 
     # command centre: everything both nodes have done, sent at the start of every run
@@ -358,14 +360,19 @@ def run_pipeline(cfg: dict, dry_run: bool, no_push: bool, download: bool = False
     notify_status_report(status_text)
 
     slices_left = int(raw_before.get("slices_left") or 0)
-    if raw_before.get("total", 0) and slices_left == 0:
+    per_batch = max(1, int(raw_before.get("per_batch") or 5))
+    secs = int(raw_before.get("short_secs") or 40)
+    if raw_before.get("dir"):
+        # always say how many reels of `short_seconds` the raw footage still holds
+        notify_raw_budget(raw_before)
+    if raw_before.get("dir") and raw_before.get("total", 0) and slices_left == 0:
         # The library is used up: say so loudly and leave the decision to a human.
-        notify_raw_slices_exhausted(raw_before.get("slices", []))
-        log("Raw exhausted: 0 clips left to slice — no download will be attempted.", "WARN")
-    elif raw_before["remaining"] == 0:
+        notify_raw_slices_exhausted(raw_before.get("slices", []), secs)
+        log(f"Raw exhausted: 0 reels of {secs}s left — no download will be attempted.", "WARN")
+    elif raw_before.get("dir") and raw_before.get("total", 0) == 0:
         notify_raw_empty()
-    elif slices_left <= 5:
-        notify_raw_low(slices_left)
+    elif slices_left and slices_left <= per_batch:
+        notify_raw_low(slices_left, per_batch, secs)
 
     # ── 1. raw top-up — MANUAL ONLY ──
     # Slicing raw footage is supposed to run dry; when it does, the run reports
@@ -443,7 +450,7 @@ def run_pipeline(cfg: dict, dry_run: bool, no_push: bool, download: bool = False
 
     after = ps.raw_counts()
     waiting = len(ps.pending_shorts())
-    if after["remaining"] == 0 and waiting == 0:
+    if after.get("dir") and after.get("slices_left", 0) == 0 and waiting == 0:
         notify_raw_fully_processed(len(ps.ledger()), daily_shorts)
 
     stats = _stats(ps, raw_before, shorts_before, posted_before, steps, started)
@@ -462,8 +469,8 @@ def _stats(ps, raw_before: dict, shorts_before: int, posted_before: int,
         "node": NODE.upper(),
         "started": started.strftime("%Y-%m-%d %H:%M IST"),
         "finished": now.strftime("%Y-%m-%d %H:%M IST"),
-        "raw_before": raw_before["remaining"],
-        "raw_after": ps.raw_counts()["remaining"],
+        "raw_before": raw_before["slices_left"],
+        "raw_after": ps.raw_counts()["slices_left"],
         "waiting_shorts": len(ps.pending_shorts()),
         "posted_today": posted_now,
         "slots_total": len(ps.slots()),
@@ -484,7 +491,7 @@ def render_summary(stats: dict) -> str:
             f"started  : {stats['started']}",
             f"finished : {stats['finished']}",
             "",
-            f"raw      : {stats['raw_before']} → {stats['raw_after']} remaining",
+            f"raw      : {stats['raw_before']} → {stats['raw_after']} reels left",
             f"shorts   : {stats['waiting_shorts']} waiting on disk",
             f"posted   : {stats['posted_this_run']} this run · "
             f"{stats['posted_today']}/{stats['slots_total']} slots today",

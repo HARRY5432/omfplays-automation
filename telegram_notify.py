@@ -150,12 +150,51 @@ def notify_raw_empty() -> bool:
     )
 
 
-def notify_raw_low(count: int) -> bool:
+def notify_raw_budget(raw: dict) -> bool:
+    """How many shorts of short_secs the raw footage can still produce.
+
+    This is the plain answer to "how many reels are left in raw?": duration of
+    every raw video divided by the reel length, minus the reels already sliced.
+    Sent on every run so the number is always in the chat, not only when low.
+    """
+    left = int(raw.get("reels_left") or raw.get("slices_left") or 0)
+    total = int(raw.get("reels_total") or raw.get("slices_total") or 0)
+    used = int(raw.get("reels_used") or raw.get("slices_used") or 0)
+    secs = int(raw.get("short_secs") or 40)
+    per_batch = max(1, int(raw.get("per_batch") or 5))
+    footage_h = (raw.get("footage_min") or 0) / 60
+
+    lines = [
+        f"reels left : {left} × {secs}s  ({left * secs // 60}m of reels)",
+        f"reels used : {used} of {total}",
+        f"footage    : {footage_h:.1f}h across {raw.get('total', 0)} raw video(s)",
+        f"batches    : ~{raw.get('batches_left', left // per_batch)} of {per_batch} reels",
+        f"progress   : {_progress(used, max(1, total))} {_pct(used, max(1, total))}",
+        "",
+    ]
+    for row in (raw.get("slices") or [])[:6]:
+        name = str(row.get("file", "?"))
+        if len(name) > 32:
+            name = name[:29] + "..."
+        lines.append(name)
+        lines.append(
+            f"  {row.get('clips_total', 0)} reels · {row.get('clips_used', 0)} used"
+            f" · {row.get('clips_left', 0)} left"
+        )
+    if left == 0:
+        lines += ["0 reels left — the raw footage is used up.", "add new videos to raw/ by hand."]
+    else:
+        lines += ["nothing is downloaded automatically — raw/ is manual only"]
+    return _pre(_box(f"RAW → REELS ({secs}s each)", lines, "🎞"))
+
+
+def notify_raw_low(count: int, per_batch: int = 5, secs: int = 40) -> bool:
     return _pre(
         _box(
             "RAW RUNNING OUT",
             [
-                f"only {count} clip(s) left to slice",
+                f"only {count} reel(s) of {secs}s left to slice"
+                + (f" ({count / per_batch:.1f} batches)" if per_batch else ""),
                 "",
                 "when they run out the pipeline stops building and alerts you",
                 "nothing is downloaded automatically — add footage by hand",
@@ -165,16 +204,16 @@ def notify_raw_low(count: int) -> bool:
     )
 
 
-def notify_raw_slices_exhausted(rows: list) -> bool:
-    """Every clip has been sliced out of the raw footage: a human must add more."""
-    lines = ["every clip has been sliced out of the raw videos", ""]
+def notify_raw_slices_exhausted(rows: list, secs: int = 40) -> bool:
+    """Every reel has been sliced out of the raw footage: a human must add more."""
+    lines = [f"0 reels of {secs}s left — every reel has been sliced out", ""]
     for row in (rows or [])[:6]:
         name = str(row.get("file", "?"))
         if len(name) > 34:
             name = name[:31] + "..."
         lines.append(name)
         lines.append(
-            f"  {row.get('clips_used', 0)}/{row.get('clips_total', 0)} clips used · 0 left"
+            f"  {row.get('clips_total', 0)} reels · {row.get('clips_used', 0)} sliced · 0 left"
         )
     lines += [
         "",
