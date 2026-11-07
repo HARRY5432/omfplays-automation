@@ -2,7 +2,7 @@
   "raw_dir": "raw",
   "output_dir": "shorts",
   "short_seconds": 40,
-  "daily_shorts": 4,
+  "daily_shorts": 5,
   "batch_hours": 25,
   "start_date": "2026-10-25",
   "frame_width": 1080,
