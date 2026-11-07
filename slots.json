@@ -20,11 +20,6 @@
       "time": "05:00",
       "label": "US East Early Morning + Asia Start",
       "node": "github"
-    },
-    {
-      "time": "08:30",
-      "label": "US East Morning + India Night",
-      "node": "local"
     }
   ]
 }
