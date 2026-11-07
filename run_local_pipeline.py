@@ -6,7 +6,7 @@ What it does, in order:
   2. report raw/shots status to Telegram (command centre block)
   3. report how many clips are left in each raw video (never download on its own)
   4. build vertical shorts (capped by config.daily_shorts)
-  5. generate OpenRouter captions ("Day XX of Modern Warfare")
+  5. generate OpenRouter captions ("Day N Reel 1..5 of Modern Warfare")
   6. publish the slots OWNED BY THIS NODE that are due
   7. delete published shorts, push pending ones + state to GitHub
   8. send an end-of-run summary and record the run in state/nodes.json
