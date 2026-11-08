@@ -469,3 +469,24 @@ hint: Disable this message with "git config set advice.addIgnoredFile false"
 [2026-11-08 11:59 UTC] [INFO] thumbnails: 0 new, 4 already present
 [2026-11-08 11:59 UTC] [INFO] Snapshot: 4 short(s) on disk before push.
 [2026-11-08 11:59 UTC] [INFO] Pushing shorts + captions + thumbnails + logs + state to GitHub...
+[2026-11-08 11:59 UTC] [INFO] Pushed 4 short(s) + sidecars to GitHub.
+[2026-11-08 11:59 UTC] [INFO]   pushed: s20261106_002.mp4 + .txt + .jpg
+[2026-11-08 11:59 UTC] [INFO]   pushed: s20261106_004.mp4 + .txt + .jpg
+[2026-11-08 11:59 UTC] [INFO]   pushed: s20261106_005.mp4 + .txt + .jpg
+[2026-11-08 11:59 UTC] [INFO]   pushed: s20261107_001.mp4 + .txt + .jpg
+[2026-11-08 11:59 UTC] [INFO] Step 4b: cleaning local copies after successful GitHub push...
+[2026-11-08 11:59 UTC] [INFO] cleaned: s20261106_002.mp4 (26.0 MB)
+[2026-11-08 11:59 UTC] [INFO] cleaned: s20261106_002.txt (0.0 MB)
+[2026-11-08 11:59 UTC] [INFO] cleaned: s20261106_002.jpg (0.0 MB)
+[2026-11-08 11:59 UTC] [INFO] cleaned: s20261106_004.mp4 (13.2 MB)
+[2026-11-08 11:59 UTC] [INFO] cleaned: s20261106_004.txt (0.0 MB)
+[2026-11-08 11:59 UTC] [INFO] cleaned: s20261106_004.jpg (0.2 MB)
+[2026-11-08 11:59 UTC] [INFO] cleaned: s20261106_005.mp4 (26.0 MB)
+[2026-11-08 11:59 UTC] [INFO] cleaned: s20261106_005.txt (0.0 MB)
+[2026-11-08 11:59 UTC] [INFO] cleaned: s20261106_005.jpg (0.0 MB)
+[2026-11-08 11:59 UTC] [INFO] cleaned: s20261107_001.mp4 (16.6 MB)
+[2026-11-08 11:59 UTC] [INFO] cleaned: s20261107_001.txt (0.0 MB)
+[2026-11-08 11:59 UTC] [INFO] cleaned: s20261107_001.jpg (0.1 MB)
+[2026-11-08 11:59 UTC] [INFO] cleanup: 12 file(s) removed from disk after GitHub push.
+[2026-11-08 11:59 UTC] [INFO] Dashboard written to F:\✈Content Engine\omfplays\webapp\dashboard.html
+[2026-11-08 11:59 UTC] [INFO] === Startup Pipeline Finished ===

@@ -1,0 +1,12 @@
+# Cloudflare Pages configuration for omfplays dashboard
+# Static site: no build command, serves files from /webapp
+
+name = "omfplays-dashboard"
+compatibility_date = "2026-11-08"
+
+[deploy]
+  # GitHub-connected Pages: no build command needed for static HTML
+  # Output directory is set in the Cloudflare dashboard UI to: webapp
+
+[observability]
+  enabled = false

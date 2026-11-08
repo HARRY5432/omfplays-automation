@@ -1,31 +1,26 @@
 #!/usr/bin/env python3
-"""run_local_pipeline.py — the daytime (local) node of the omfplays automation.
+"""
+run_local_pipeline.py — omfplays startup processor.
 
-What it does, in order:
-  1. take the run lock (steals it if the previous holder died)
-  2. report raw/shots status to Telegram (command centre block)
-  3. report how many short_seconds reels are left in the raw footage (never download)
-  4. build vertical shorts (capped by config.daily_shorts)
-  5. generate OpenRouter captions ("Day N Reel 1..5 of Modern Warfare")
-  6. publish the slots OWNED BY THIS NODE that are due
-  7. delete published shorts, push pending ones + state to GitHub
-  8. send an end-of-run summary and record the run in state/nodes.json
+Runs at Windows login. Shows a startup summary, then auto-completes today's
+shorts processing if it isn't done yet:
 
-Designed to be started unattended (Task Scheduler / at logon): it never
-prompts, never `pause`s, is safe to run twice, and keeps going when a
-non-critical step fails.
+  1. render startup summary (raw/library/slots state)
+  2. build missing vertical shorts (build_shorts_omf.py, idempotent/resumable)
+  3. generate OpenRouter captions for shorts missing .txt sidecars
+  4. generate HD thumbnails for shorts missing .jpg
+  5. push logs + state + shorts to GitHub
+  6. write webapp/dashboard.html (for Cloudflare Pages)
 
-Flags:
-  --status       print the status block and exit
-  --dry-run      report only, change nothing
-  --no-push      skip git push
-  --ignore-lock  run even if another instance holds the lock
+Never auto-uploads to Instagram — that stays a separate manual step.
+Safe to run twice; never crashes on a single step failure.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -51,6 +46,7 @@ LOCK_PATH = STATE_DIR / "pipeline.lock"
 UPLOADS_PATH = STATE_DIR / "uploads.json"
 CONFIG_PATH = HERE / "config.json"
 PIPELINE_LOG = LOGS_DIR / "pipeline.log"
+DASHBOARD_PATH = HERE / "webapp" / "dashboard.html"
 
 for _stream in (sys.stdout, sys.stderr):
     try:
@@ -59,9 +55,9 @@ for _stream in (sys.stdout, sys.stderr):
         pass
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════════
 # LOGGING
-# ═══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════════
 
 def log(msg: str, level: str = "INFO") -> None:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -75,12 +71,11 @@ def log(msg: str, level: str = "INFO") -> None:
         pass
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════════
 # LOCK (with stale-lock recovery)
-# ═══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════════
 
 def _pid_alive(pid: int) -> bool:
-    """Cross-platform "is this process still running?"."""
     if not pid or pid <= 0:
         return False
     if os.name == "nt":
@@ -194,9 +189,9 @@ class PipelineLock:
             pass
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════════
 # CONFIG + SUBPROCESS
-# ═══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════════
 
 def load_config() -> dict:
     if not CONFIG_PATH.exists():
@@ -206,12 +201,10 @@ def load_config() -> dict:
     except Exception as e:
         raise RuntimeError(f"config.json is invalid JSON: {e}")
 
-    for key in ("raw_dir", "output_dir", "short_seconds", "daily_shorts"):
-        if key not in cfg:
-            raise RuntimeError(f"config.json missing required key: {key}")
-
     cfg.setdefault("daily_shorts", 5)
-    cfg.setdefault("download_when_remaining_below", 2)
+    cfg.setdefault("short_seconds", 40)
+    cfg.setdefault("frame_width", 1080)
+    cfg.setdefault("frame_height", 1920)
     cfg.setdefault("max_lock_age_hours", 6)
     cfg.setdefault("max_push_mb", 90)
     cfg.setdefault("step_retries", 2)
@@ -219,19 +212,18 @@ def load_config() -> dict:
     return cfg
 
 
-def run_step(name: str, script: str, retries: int = 2, delay: int = 15) -> int:
-    """Run a sibling script with retries. Returns the final exit code."""
+def run_step(name: str, script: str, args: list[str] | None = None, retries: int = 2, delay: int = 15) -> int:
+    """Run a sibling script with retries. Never raises."""
     env = os.environ.copy()
     env["PIPELINE_NODE"] = NODE
     env["PYTHONUNBUFFERED"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
+    cmd = [sys.executable, "-u", script] + (args or [])
     last = 1
     for attempt in range(1, retries + 1):
-        log(f"RUN [{name}] attempt {attempt}/{retries}: {script}")
+        log(f"RUN [{name}] attempt {attempt}/{retries}: {script} {' '.join(args or [])}")
         try:
-            last = subprocess.run(
-                [sys.executable, "-u", script], cwd=str(HERE), env=env
-            ).returncode
+            last = subprocess.run(cmd, cwd=str(HERE), env=env).returncode
         except Exception as e:
             log(f"[{name}] could not start: {e}", "ERROR")
             last = 1
@@ -244,9 +236,55 @@ def run_step(name: str, script: str, retries: int = 2, delay: int = 15) -> int:
     return last
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════════
+# THUMBNAILS (HD quality, ffmpeg)
+# ════════════════════════════════════════════════════════════════════════════════
+
+def generate_thumbnails(limit: int | None = None) -> int:
+    """Generate HD 1080x1920 thumbnails for shorts missing a .jpg sidecar."""
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        log("ffmpeg not found — skipping thumbnail generation", "WARN")
+        return 0
+
+    SHORTS_DIR.mkdir(parents=True, exist_ok=True)
+    shorts = sorted(SHORTS_DIR.glob("s*.mp4"))
+    if limit is not None:
+        shorts = shorts[:limit]
+
+    made = 0
+    skipped = 0
+    for v in shorts:
+        thumb = v.with_suffix(".jpg")
+        if thumb.exists() and thumb.stat().st_size > 0:
+            skipped += 1
+            continue
+        cmd = [
+            ffmpeg, "-y",
+            "-i", str(v),
+            "-ss", "00:00:02",
+            "-vframes", "1",
+            "-q:v", "2",
+            "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920",
+            str(thumb),
+        ]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+            if r.returncode == 0 and thumb.exists() and thumb.stat().st_size > 0:
+                made += 1
+                log(f"thumbnail: {thumb.name}")
+            else:
+                log(f"thumbnail failed: {v.name}", "WARN")
+        except Exception as e:
+            log(f"thumbnail error {v.name}: {e}", "WARN")
+
+    log(f"thumbnails: {made} new, {skipped} already present")
+    return made
+
+
+# ════════════════════════════════════════════════════════════════════════════════
 # GIT (never blocks the pipeline)
-# ═══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════════
 
 def _git(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
@@ -254,32 +292,32 @@ def _git(*args: str) -> subprocess.CompletedProcess:
     )
 
 
-def git_sync() -> bool:
-    """Pull remote state written by the night node. Conflicts abort, not crash."""
-    if not (HERE / ".git").exists():
-        return False
-    r = _git("pull", "--rebase", "--autostash")
-    if r.returncode == 0:
-        return True
-    _git("rebase", "--abort")
-    log(f"git pull --rebase failed: {(r.stderr or r.stdout).strip()[:300]}", "WARN")
-    return False
-
-
-def git_push_changes(cfg: dict) -> bool:
+def git_push_changes(cfg: dict) -> tuple[bool, list[str]]:
+    """Push to GitHub. Returns (success, list_of_pushed_short_stems)."""
     if not (HERE / ".git").exists():
         log("Not a git repository — skipping push.", "WARN")
-        return False
+        return False, []
 
-    log("Pushing pending shorts + captions + state to GitHub...")
-    git_sync()
+    # Snapshot shorts before add so we know exactly what was pushed.
+    shorts_before_push = sorted({p.stem for p in SHORTS_DIR.glob("s*.mp4")})
+    log(f"Snapshot: {len(shorts_before_push)} short(s) on disk before push.")
 
-    add = _git("add", "-A", "--", "shorts", "state")
+    log("Pushing shorts + captions + thumbnails + logs + state to GitHub...")
+    r = _git("pull", "--rebase", "--autostash")
+    if r.returncode != 0:
+        _git("rebase", "--abort")
+        log(f"git pull --rebase failed: {(r.stderr or r.stdout).strip()[:300]}", "WARN")
+
+    add = _git("add", "-A", "--", "shorts", "state", "webapp")
     if add.returncode != 0:
-        log(f"git add failed: {(add.stderr or add.stdout).strip()[:300]}", "WARN")
-        return False
+        log(f"git add failed (shorts/state/webapp): {(add.stderr or add.stdout).strip()[:300]}", "WARN")
+        return False, []
 
-    # Never commit a runaway master file (GitHub rejects >100 MB).
+    # Force-add the pipeline log (logs/ is gitignored but we want it on GitHub).
+    log_add = _git("add", "-f", "logs/pipeline.log")
+    if log_add.returncode != 0:
+        log(f"git add -f logs/pipeline.log failed: {(log_add.stderr or log_add.stdout).strip()[:300]}", "WARN")
+
     max_mb = float(cfg.get("max_push_mb", 90))
     staged = [p for p in _git("diff", "--cached", "--name-only").stdout.splitlines() if p.strip()]
     oversized = []
@@ -300,184 +338,308 @@ def git_push_changes(cfg: dict) -> bool:
 
     if _git("diff", "--staged", "--quiet").returncode == 0:
         log("No changes to push.")
-        return True
+        return True, []
 
     msg = f"chore({NODE}): pipeline {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
     commit = _git("commit", "-m", msg)
     if commit.returncode != 0:
         log(f"git commit failed: {(commit.stderr or commit.stdout).strip()[:300]}", "WARN")
-        return False
+        return False, []
 
     for attempt in (1, 2):
         push = _git("push")
         if push.returncode == 0:
-            log("Shorts + captions + state pushed to GitHub.")
-            return True
+            log(f"Pushed {len(shorts_before_push)} short(s) + sidecars to GitHub.")
+            for stem in shorts_before_push:
+                log(f"  pushed: {stem}.mp4 + .txt + .jpg")
+            return True, shorts_before_push
         log(f"git push failed (attempt {attempt}): {(push.stderr or push.stdout).strip()[:200]}", "WARN")
-        git_sync()
+        _git("pull", "--rebase", "--autostash")
 
-    log("git push still failing — shorts stay local, the next run retries.", "WARN")
-    return False
+    log("git push still failing — changes stay local, next run retries.", "WARN")
+    return False, []
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# PIPELINE
-# ═══════════════════════════════════════════════════════════════════════════════
+def cleanup_pushed_short(stems: list[str]) -> None:
+    """Delete local .mp4/.txt/.jpg for shorts that were pushed to GitHub.
+    Records each cleaned file in state/pushed.json so we always know what is
+    on GitHub vs what is still on disk."""
+    pushed_log_path = STATE_DIR / "pushed.json"
+    try:
+        pushed_log = json.loads(pushed_log_path.read_text(encoding="utf-8"))
+    except Exception:
+        pushed_log = {}
 
-def run_pipeline(cfg: dict, dry_run: bool, no_push: bool, download: bool = False) -> tuple[int, dict]:
-    import pipeline_status as ps
-    from telegram_notify import (
-        notify_build_failed,
-        notify_download_failed,
-        notify_meta_failed,
-        notify_raw_budget,
-        notify_raw_empty,
-        notify_raw_fully_processed,
-        notify_raw_low,
-        notify_status_report,
-        notify_raw_slices_exhausted,
-        notify_upload_started,
+    now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    cleaned = []
+    already_gone = []
+
+    for stem in stems:
+        pushed_log[stem] = {
+            "pushed_at": now_iso,
+            "cleaned_from_disk": True,
+        }
+        for ext in (".mp4", ".txt", ".jpg"):
+            f = SHORTS_DIR / f"{stem}{ext}"
+            if not f.exists():
+                already_gone.append(f"{stem}{ext}")
+                continue
+            try:
+                size = f.stat().st_size
+                f.unlink()
+                cleaned.append(f"{stem}{ext}")
+                log(f"cleaned: {f.name} ({size / 1024 / 1024:.1f} MB)")
+            except Exception as e:
+                log(f"could not clean {f.name}: {e}", "WARN")
+
+    pushed_log_path.parent.mkdir(parents=True, exist_ok=True)
+    pushed_log_path.write_text(
+        json.dumps(pushed_log, indent=2, ensure_ascii=False), encoding="utf-8"
     )
 
-    started = datetime.now(ps.IST)
+    log(f"cleanup: {len(cleaned)} file(s) removed from disk after GitHub push.")
+    if already_gone:
+        log(f"cleanup: {len(already_gone)} file(s) already absent (skipped).")
+
+
+# ═════════════════════════════════════════════════════════════════════════════════
+# DASHBOARD
+# ════════════════════════════════════════════════════════════════════════════════
+
+def write_dashboard() -> None:
+    """Write a self-contained HTML dashboard to webapp/dashboard.html."""
+    try:
+        import html as _html
+        import pipeline_status as ps
+
+        snap = ps.snapshot()
+        now = snap["now_ist"]
+        rows = snap["slots_today"]
+
+        lines = [
+            "<!DOCTYPE html>",
+            "<html lang='en'>",
+            "<head>",
+            "<meta charset='UTF-8'>",
+            "<meta name='viewport' content='width=device-width, initial-scale=1.0'>",
+            "<title>omfplays Dashboard</title>",
+            "<style>",
+            "body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0b0c10; color: #c5c6c7; padding: 20px; }",
+            "h1 { color: #66fcf1; margin-bottom: 16px; }",
+            ".card { background: #1f2833; border: 1px solid #45a29e; border-radius: 10px; padding: 16px; margin-bottom: 16px; }",
+            ".card h2 { color: #66fcf1; font-size: 16px; margin-bottom: 8px; }",
+            ".row { display: flex; gap: 16px; flex-wrap: wrap; }",
+            ".stat { flex: 1; min-width: 120px; background: #0e1521; padding: 10px; border-radius: 6px; }",
+            ".stat .val { font-size: 20px; font-weight: bold; color: #45a29e; }",
+            ".stat .lbl { font-size: 12px; color: #7d8a99; }",
+            "pre { background: #0e1521; padding: 12px; border-radius: 6px; overflow-x: auto; font-size: 13px; }",
+            ".slot { margin: 6px 0; padding: 6px 10px; background: #0e1521; border-radius: 4px; }",
+            ".slot.posted { border-left: 4px solid #45a29e; }",
+            ".slot.due { border-left: 4px solid #f9c74f; }",
+            ".slot.missed { border-left: 4px solid #ff6b6b; }",
+            ".slot.scheduled { border-left: 4px solid #6c757d; }",
+            ".updated { color: #7d8a99; font-size: 12px; margin-top: 16px; }",
+            "</style>",
+            "</head>",
+            "<body>",
+            "<h1>⚡ omfplays Dashboard</h1>",
+            f"<p>Last updated: {now}</p>",
+            "<div class='row'>",
+            f"<div class='stat'><div class='val'>{snap['shorts']['posted_today']}</div><div class='lbl'>slots posted today</div></div>",
+            f"<div class='stat'><div class='val'>{snap['shorts']['pending']}</div><div class='lbl'>shorts waiting</div></div>",
+            f"<div class='stat'><div class='val'>{snap['manifest']['total']}</div><div class='lbl'>manifest total</div></div>",
+            f"<div class='stat'><div class='val'>{snap['disk_free_gb']}</div><div class='lbl'>GB disk free</div></div>",
+            "</div>",
+            "<div class='card'>",
+            "<h2>📅 Today's Slots</h2>",
+        ]
+        for row in rows:
+            glyph = {"posted": "✅", "due": "⏳", "missed": "✖", "scheduled": "·"}.get(row["state"], "·")
+            css = row["state"]
+            detail = ""
+            if row["state"] == "posted":
+                detail = f"by {row.get('by', '?').upper()} · {row.get('short', '?')}"
+            elif row["state"] == "due":
+                detail = f"due now · owner {row['owner'].upper()}"
+            elif row["state"] == "missed":
+                detail = f"{row.get('overdue_min', 0)}m overdue · owner {row['owner'].upper()}"
+            else:
+                detail = f"owner {row['owner'].upper()}"
+            lines.append(f"<div class='slot {css}'>{glyph} {row['time']} IST — {detail}</div>")
+
+        lines += [
+            "</div>",
+            "<div class='card'>",
+            "<h2>📜 Recent Logs</h2>",
+            "<pre>",
+        ]
+        log_path = LOGS_DIR / "pipeline.log"
+        if log_path.exists():
+            log_lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            for line in log_lines[-50:]:
+                lines.append(_html.escape(line))
+        else:
+            lines.append("No logs yet.")
+        lines += [
+            "</pre>",
+            "</div>",
+            "<div class='card'>",
+            "<h2>📂 Raw Library</h2>",
+            f"<p>Raw videos: {snap['raw']['total']} | Reels left: {snap['raw'].get('slices_left', 0)}</p>",
+            "</div>",
+            "<p class='updated'>Generated by omfplays local pipeline. Push this file to GitHub and Cloudflare Pages will redeploy.</p>",
+            "</body>",
+            "</html>",
+        ]
+
+        DASHBOARD_PATH.parent.mkdir(parents=True, exist_ok=True)
+        DASHBOARD_PATH.write_text("\n".join(lines), encoding="utf-8")
+        log(f"Dashboard written to {DASHBOARD_PATH}", "INFO")
+    except Exception as e:
+        log(f"Could not write dashboard: {e}", "WARN")
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# STARTUP SUMMARY
+# ════════════════════════════════════════════════════════════════════════════════
+
+def print_startup_summary(cfg: dict) -> None:
+    """Print the startup summary block (no Telegram spam)."""
+    import pipeline_status as ps
+
+    snap = ps.snapshot()
+    print("\n" + "═" * 58)
+    print("  🟢 OMPLAYS STARTUP SUMMARY")
+    print("═" * 58)
+    print(f"  🕐  {snap['now_ist']}")
+    print(f"  🖥  node : {snap['node'].upper()}")
+    print(f"  📅  date : {snap['date']}")
+    print()
+    print("  📦 LIBRARY")
+    print(f"     raw videos   : {snap['raw']['total']}")
+    print(f"     reels left   : {snap['raw'].get('slices_left', 0)} × {snap['raw'].get('short_secs', 40)}s")
+    print(f"     shorts waiting: {snap['shorts']['pending']}")
+    print(f"     manifest total: {snap['manifest']['total']}")
+    print()
+    print("  📅 TODAY'S SLOTS")
+    for row in snap["slots_today"]:
+        glyph = {"posted": "✅", "due": "⏳", "missed": "✖", "scheduled": "·"}.get(row["state"], "·")
+        print(f"     {glyph} {row['time']} IST  {row['state']}")
+    print()
+    print("  💾 SYSTEM")
+    print(f"     disk free : {snap['disk_free_gb']} GB")
+    if snap["attention"]:
+        print("     ⚠ attention:")
+        for item in snap["attention"][:5]:
+            print(f"        - {item}")
+    print("═" * 58 + "\n")
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# PIPELINE
+# ════════════════════════════════════════════════════════════════════════════════
+
+def run_pipeline(cfg: dict, dry_run: bool, no_push: bool) -> dict:
+    import pipeline_status as ps
+
     steps: dict[str, str] = {}
     daily_shorts = int(cfg.get("daily_shorts", 5))
+    started = datetime.now(ps.IST)
+
     raw_before = ps.raw_counts()
     shorts_before = len(ps.pending_shorts())
     posted_before = len(ps.posted_on(ps.ist_now().strftime("%Y-%m-%d")))
 
-    log("=== Local Pipeline Started ===")
+    log("=== Startup Pipeline Started ===")
     log(
-        f"Raw: {raw_before['total']} video(s) · {raw_before['slices_used']} reels sliced · "
-        f"{raw_before['slices_left']} reels of {raw_before.get('short_secs', 40)}s left · "
+        f"Raw: {raw_before['total']} video(s) · {raw_before['slices_left']} reels left · "
         f"shorts waiting: {shorts_before}"
     )
 
-    # command centre: everything both nodes have done, sent at the start of every run
-    ps.record_node_run("running", note="started", count_run=False)
-    status_text = ps.render(ps.snapshot())
-    print(status_text, flush=True)
-    notify_status_report(status_text)
+    # Print startup summary to console (no Telegram spam)
+    print_startup_summary(cfg)
 
-    slices_left = int(raw_before.get("slices_left") or 0)
-    per_batch = max(1, int(raw_before.get("per_batch") or 5))
-    secs = int(raw_before.get("short_secs") or 40)
-    if raw_before.get("dir"):
-        # always say how many reels of `short_seconds` the raw footage still holds
-        notify_raw_budget(raw_before)
-    if raw_before.get("dir") and raw_before.get("total", 0) and slices_left == 0:
-        # The library is used up: say so loudly and leave the decision to a human.
-        notify_raw_slices_exhausted(raw_before.get("slices", []), secs)
-        log(f"Raw exhausted: 0 reels of {secs}s left — no download will be attempted.", "WARN")
-    elif raw_before.get("dir") and raw_before.get("total", 0) == 0:
-        notify_raw_empty()
-    elif slices_left and slices_left <= per_batch:
-        notify_raw_low(slices_left, per_batch, secs)
-
-    # ── 1. raw top-up — MANUAL ONLY ──
-    # Slicing raw footage is supposed to run dry; when it does, the run reports
-    # it and stops building from what is left. Downloading on its own was wrong:
-    # footage choice belongs to the operator, so this only happens with --download
-    # or "auto_download": true in config.json.
-    auto = bool(cfg.get("auto_download", False))
-    if download or auto:
-        if dry_run:
-            steps["download"] = "skipped (dry run)"
-        else:
-            log(f"Manual top-up requested — downloading {cfg.get('downloads_per_run', 1)} video(s)...")
-            rc = run_step("download", "download_channels.py", retries=2, delay=20)
-            if rc == 0:
-                steps["download"] = "ok (manual)"
-            else:
-                steps["download"] = "failed"
-                notify_download_failed()
-                log("Continuing with whatever raw footage is already local.", "WARN")
-    else:
-        steps["download"] = "off (manual only)"
-
-    # ── 2. build shorts ──
+    # ── Step 1: build missing shorts ──
     if dry_run:
         steps["build"] = "skipped (dry run)"
     else:
-        log(f"Building shorts (daily cap: {daily_shorts})...")
-        rc = run_step("build", "build_shorts_omf.py", retries=int(cfg.get("step_retries", 2)),
-                      delay=int(cfg.get("step_retry_delay_sec", 15)))
-        steps["build"] = "ok" if rc == 0 else "failed"
-        if rc != 0:
-            notify_build_failed()
-            return 1, _stats(ps, raw_before, shorts_before, posted_before, steps, started)
+        existing = len(list(SHORTS_DIR.glob("s*.mp4")))
+        need = max(0, daily_shorts - existing)
+        if need > 0:
+            log(f"Building {need} missing short(s) for today...")
+            rc = run_step(
+                "build",
+                "build_shorts_omf.py",
+                args=["--max-shorts", str(need)],
+                retries=int(cfg.get("step_retries", 2)),
+                delay=int(cfg.get("step_retry_delay_sec", 15)),
+            )
+            steps["build"] = "ok" if rc == 0 else "failed"
+        else:
+            log(f"Already {existing} shorts waiting (daily cap {daily_shorts}). Skipping build.")
+            steps["build"] = "skipped (enough shorts)"
 
-    # ── 3. captions ──
+    # ── Step 2: generate OpenRouter captions ──
     if dry_run:
         steps["meta"] = "skipped (dry run)"
     else:
-        log("Generating captions via OpenRouter...")
-        rc = run_step("meta", "generate_meta.py", retries=2, delay=10)
+        log("Generating OpenRouter captions for shorts missing .txt...")
+        rc = run_step(
+            "meta",
+            "generate_meta.py",
+            retries=int(cfg.get("step_retries", 2)),
+            delay=int(cfg.get("step_retry_delay_sec", 10)),
+        )
         steps["meta"] = "ok" if rc == 0 else "failed"
         if rc != 0:
-            notify_meta_failed()
+            log("Meta step failed — shorts will have fallback captions on next run.", "WARN")
 
-    # ── 4. publish this node's due slots ──
+    # ── Step 3: generate HD thumbnails ──
     if dry_run:
-        steps["upload"] = "skipped (dry run)"
+        steps["thumbnails"] = "skipped (dry run)"
     else:
-        import upload_shorts
+        log("Generating HD thumbnails for shorts missing .jpg...")
+        try:
+            generate_thumbnails()
+            steps["thumbnails"] = "ok"
+        except Exception as e:
+            log(f"Thumbnail step crashed: {e}", "ERROR")
+            steps["thumbnails"] = "failed"
 
-        due = upload_shorts.due_plan(NODE)
-        if not due:
-            log("No slots due for this node right now.")
-            steps["upload"] = "nothing due"
-        else:
-            notify_upload_started(len(due), started.strftime("%Y-%m-%d"),
-                                  started.strftime("%H:%M"), node=NODE)
-            rc = run_step("upload", "upload_shorts.py", retries=2, delay=20)
-            steps["upload"] = "ok" if rc == 0 else "failed"
-            if rc != 0:
-                log("Local upload failed — the night node will retry these slots.", "WARN")
-
-    # ── 5. delete published shorts from disk ──
-    if dry_run:
-        steps["cleanup"] = "skipped (dry run)"
-    else:
-        rc = run_step("cleanup", "cleanup_shorts.py", retries=1)
-        steps["cleanup"] = "ok" if rc == 0 else "failed"
-
-    # ── 6. push what is left for the night node ──
+    # ── Step 4: push to GitHub (logs + state + shorts + dashboard) ──
+    pushed_stems: list[str] = []
     if dry_run or no_push:
         steps["push"] = "skipped"
     else:
-        steps["push"] = "ok" if git_push_changes(cfg) else "failed"
+        push_ok, pushed_stems = git_push_changes(cfg)
+        steps["push"] = "ok" if push_ok else "failed"
+        if push_ok and pushed_stems:
+            log("Step 4b: cleaning local copies after successful GitHub push...")
+            cleanup_pushed_short(pushed_stems)
+            steps["cleanup"] = "ok"
+        elif push_ok:
+            steps["cleanup"] = "skipped (nothing to clean)"
+        else:
+            steps["cleanup"] = "skipped (push failed)"
+
+    # ── Step 5: write dashboard ──
+    if not dry_run:
+        write_dashboard()
 
     after = ps.raw_counts()
     waiting = len(ps.pending_shorts())
-    if after.get("dir") and after.get("slices_left", 0) == 0 and waiting == 0:
-        notify_raw_fully_processed(len(ps.ledger()), daily_shorts)
-
-    stats = _stats(ps, raw_before, shorts_before, posted_before, steps, started)
-    log("=== Local Pipeline Finished ===")
-    return 0, stats
-
-
-def _stats(ps, raw_before: dict, shorts_before: int, posted_before: int,
-           steps: dict, started: datetime) -> dict:
-    now = datetime.now(ps.IST)
-    today = now.strftime("%Y-%m-%d")
-    posted_now = len(ps.posted_on(today))
-    # shorts waiting now + shorts we published (and deleted) = net built
-    built = max(0, len(ps.pending_shorts()) + (posted_now - posted_before) - shorts_before)
-    return {
+    stats = {
         "node": NODE.upper(),
         "started": started.strftime("%Y-%m-%d %H:%M IST"),
-        "finished": now.strftime("%Y-%m-%d %H:%M IST"),
+        "finished": datetime.now(ps.IST).strftime("%Y-%m-%d %H:%M IST"),
         "raw_before": raw_before["slices_left"],
-        "raw_after": ps.raw_counts()["slices_left"],
-        "waiting_shorts": len(ps.pending_shorts()),
-        "posted_today": posted_now,
-        "slots_total": len(ps.slots()),
-        "posted_this_run": max(0, posted_now - posted_before),
+        "raw_after": after["slices_left"],
+        "waiting_shorts": waiting,
+        "shorts_before": shorts_before,
         "steps": steps,
-        "built_estimate": built,
     }
+    log("=== Startup Pipeline Finished ===")
+    return stats
 
 
 def render_summary(stats: dict) -> str:
@@ -485,48 +647,35 @@ def render_summary(stats: dict) -> str:
     step_line = " · ".join(f"{k} {v}" for k, v in steps.items())
     return "\n".join(
         [
-            "🏁 LOCAL RUN SUMMARY",
+            "🏁 STARTUP RUN SUMMARY",
             "─" * 34,
             f"node     : {stats['node']}",
             f"started  : {stats['started']}",
             f"finished : {stats['finished']}",
-            "",
-            f"raw      : {stats['raw_before']} → {stats['raw_after']} reels left",
-            f"shorts   : {stats['waiting_shorts']} waiting on disk",
-            f"posted   : {stats['posted_this_run']} this run · "
-            f"{stats['posted_today']}/{stats['slots_total']} slots today",
-            "",
+            f"raw reels: {stats['raw_before']} → {stats['raw_after']}",
+            f"shorts   : {stats['shorts_before']} → {stats['waiting_shorts']} waiting",
             f"steps    : {step_line}",
         ]
     )
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="omfplays local (daytime) pipeline")
+    ap = argparse.ArgumentParser(description="omfplays startup processor")
     ap.add_argument("--dry-run", action="store_true", help="report only, change nothing")
-    ap.add_argument("--status", action="store_true", help="print the status block and exit")
-    ap.add_argument("--no-push", action="store_true", help="skip the git push")
+    ap.add_argument("--no-push", action="store_true", help="skip git push")
     ap.add_argument("--ignore-lock", action="store_true", help="run despite an existing lock")
-    ap.add_argument(
-        "--download",
-        action="store_true",
-        help="manually top up raw footage before building (never happens on its own)",
-    )
     args = ap.parse_args()
-
-    import pipeline_status as ps
-    from telegram_notify import notify_fatal, notify_run_summary
-
-    if args.status:
-        print(ps.render(ps.snapshot()))
-        return 0
 
     try:
         cfg = load_config()
     except RuntimeError as e:
         log(f"FATAL: {e}", "ERROR")
-        notify_fatal(str(e))
         return 2
+
+    if args.dry_run:
+        import pipeline_status as ps
+        print_startup_summary(cfg)
+        return 0
 
     lock = PipelineLock(LOCK_PATH, max_age_hours=cfg.get("max_lock_age_hours", 6))
     if not args.ignore_lock:
@@ -539,28 +688,22 @@ def main() -> int:
     rc = 0
     stats: dict = {}
     try:
-        rc, stats = run_pipeline(cfg, args.dry_run, args.no_push, args.download)
-        if rc != 0:
-            result = "failed"
+        stats = run_pipeline(cfg, args.dry_run, args.no_push)
     except Exception as e:
         result = "failed"
         rc = 1
         log(f"FATAL: {e}\n{traceback.format_exc()}", "ERROR")
-        notify_fatal(str(e))
     finally:
         lock.release()
         if stats:
-            summary = render_summary(stats)
-            print(summary, flush=True)
-            notify_run_summary(summary)
+            print(render_summary(stats), flush=True)
             try:
+                ps = __import__("pipeline_status")
                 ps.record_node_run(
                     result,
-                    note=f"{stats['posted_this_run']} posted / {stats['waiting_shorts']} waiting",
-                    built=stats.get("built_estimate", 0),
-                    posted=stats.get("posted_this_run", 0),
+                    note=f"shorts waiting: {stats['waiting_shorts']}",
+                    built=max(0, stats["waiting_shorts"] - stats["shorts_before"]),
                 )
-                log(f"Node status recorded ({result}).")
             except Exception as e:
                 log(f"Could not record node status: {e}", "WARN")
 

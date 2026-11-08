@@ -32,6 +32,9 @@ except Exception:
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+NOTIFY_COOLDOWN_SEC = int(os.getenv("TELEGRAM_NOTIFY_COOLDOWN_SEC", "300"))
+_last_notify: dict[str, float] = {}
+
 for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(encoding="utf-8", errors="replace")
@@ -39,12 +42,25 @@ for _stream in (sys.stdout, sys.stderr):
         pass
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# SENDING
-# ═══════════════════════════════════════════════════════════════════════════════
+def _should_send(key: str) -> bool:
+    """Suppress duplicate alerts within the cooldown window."""
+    now = time.time()
+    last = _last_notify.get(key, 0.0)
+    if now - last >= NOTIFY_COOLDOWN_SEC:
+        _last_notify[key] = now
+        return True
+    return False
 
-def _send(text: str) -> bool:
+
+# ════════════════════════════════════════════════════════════════════════════════
+# SENDING
+# ════════════════════════════════════════════════════════════════════════════════
+
+def _send(text: str, key: str | None = None) -> bool:
     """Send one HTML message. Never raises."""
+    if key is not None and not _should_send(key):
+        print(f"telegram: suppressed duplicate alert ({key})", flush=True)
+        return False
     if not BOT_TOKEN or not CHAT_ID:
         print("telegram: TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set — skipping alert", flush=True)
         return False
@@ -86,8 +102,8 @@ def _send(text: str) -> bool:
     return False
 
 
-def _pre(text: str) -> bool:
-    return _send(f"<pre>{html.escape(text)}</pre>")
+def _pre(text: str, key: str | None = None) -> bool:
+    return _send(f"<pre>{html.escape(text)}</pre>", key=key)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -269,7 +285,8 @@ def notify_short_uploaded(short_name: str, slot_time: str, slot_label: str, medi
                 "published to Instagram",
             ],
             "✅",
-        )
+        ),
+        key=f"short_uploaded:{short_name}",
     )
 
 
@@ -360,12 +377,12 @@ def notify_fatal(message: str) -> bool:
 
 def notify_run_summary(summary: str) -> bool:
     """Free-form end-of-run summary (already plain text)."""
-    return _pre(summary)
+    return _pre(summary, key="run_summary")
 
 
 def notify_status_report(text: str) -> bool:
     """Command-centre status snapshot (already plain text)."""
-    return _pre(text)
+    return _pre(text, key="status_report")
 
 
 def notify_night_upload_complete(posted: int, remaining: int, total: int) -> bool:
