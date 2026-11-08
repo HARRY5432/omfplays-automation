@@ -545,3 +545,44 @@ hint: Disable this message with "git config set advice.addIgnoredFile false"
 [2026-11-08 15:03 UTC] [INFO] thumbnails: 0 new, 0 already present
 [2026-11-08 15:03 UTC] [INFO] Snapshot: 0 short(s) on disk before push.
 [2026-11-08 15:03 UTC] [INFO] Pushing shorts + captions + thumbnails + logs + state to GitHub...
+[2026-11-08 15:03 UTC] [INFO] Pushed 0 short(s) + sidecars to GitHub.
+[2026-11-08 15:03 UTC] [INFO] Dashboard written to F:\✈Content Engine\omfplays\webapp\dashboard.html
+[2026-11-08 15:03 UTC] [INFO] === Startup Pipeline Finished ===
+[2026-11-08 15:41 UTC] [INFO] Lock acquired: F:\✈Content Engine\omfplays\state\pipeline.lock (pid 5932)
+[2026-11-08 15:41 UTC] [INFO] === Startup Pipeline Started ===
+[2026-11-08 15:41 UTC] [INFO] Raw: 3 video(s) · 103 reels left · shorts waiting: 15
+[2026-11-08 15:41 UTC] [INFO] Already 15 shorts waiting (daily cap 5). Skipping build.
+[2026-11-08 15:41 UTC] [INFO] Generating OpenRouter captions for shorts missing .txt...
+[2026-11-08 15:41 UTC] [INFO] RUN [meta] attempt 1/2: generate_meta.py 
+[2026-11-08 15:41 UTC] [INFO] [meta] ok
+[2026-11-08 15:41 UTC] [INFO] Generating HD thumbnails for shorts missing .jpg...
+[2026-11-08 15:41 UTC] [INFO] thumbnail: s20261108_001.jpg
+[2026-11-08 15:41 UTC] [INFO] thumbnail: s20261108_002.jpg
+[2026-11-08 15:41 UTC] [INFO] thumbnail: s20261108_003.jpg
+[2026-11-08 15:42 UTC] [WARN] thumbnail failed: s20261108_004.mp4
+[2026-11-08 15:42 UTC] [INFO] thumbnail: s20261108_005.jpg
+[2026-11-08 15:42 UTC] [INFO] thumbnail: s20261108_006.jpg
+[2026-11-08 15:42 UTC] [INFO] thumbnail: s20261108_007.jpg
+[2026-11-08 15:42 UTC] [INFO] thumbnail: s20261108_008.jpg
+[2026-11-08 15:42 UTC] [INFO] thumbnail: s20261108_009.jpg
+[2026-11-08 15:42 UTC] [INFO] thumbnail: s20261108_010.jpg
+[2026-11-08 15:42 UTC] [INFO] thumbnail: s20261108_011.jpg
+[2026-11-08 15:42 UTC] [INFO] thumbnail: s20261108_012.jpg
+[2026-11-08 15:42 UTC] [INFO] thumbnail: s20261108_013.jpg
+[2026-11-08 15:42 UTC] [INFO] thumbnail: s20261108_014.jpg
+[2026-11-08 15:42 UTC] [INFO] thumbnail: s20261108_015.jpg
+[2026-11-08 15:42 UTC] [INFO] thumbnails: 14 new, 0 already present
+[2026-11-08 15:42 UTC] [INFO] Dashboard written to F:\✈Content Engine\omfplays\webapp\dashboard.html
+[2026-11-08 15:42 UTC] [INFO] Audit log written: 0 shorts built, 0 pushed to GitHub, 15 shorts remaining on disk.
+[2026-11-08 15:42 UTC] [INFO] === Startup Pipeline Finished ===
+[2026-11-08 15:44 UTC] [INFO] Lock acquired: F:\✈Content Engine\omfplays\state\pipeline.lock (pid 13680)
+[2026-11-08 15:44 UTC] [INFO] === Startup Pipeline Started ===
+[2026-11-08 15:44 UTC] [INFO] Raw: 3 video(s) · 103 reels left · shorts waiting: 14
+[2026-11-08 15:44 UTC] [INFO] Already 14 shorts waiting (daily cap 5). Skipping build.
+[2026-11-08 15:44 UTC] [INFO] Generating OpenRouter captions for shorts missing .txt...
+[2026-11-08 15:44 UTC] [INFO] RUN [meta] attempt 1/2: generate_meta.py 
+[2026-11-08 15:44 UTC] [INFO] [meta] ok
+[2026-11-08 15:44 UTC] [INFO] Generating HD thumbnails for shorts missing .jpg...
+[2026-11-08 15:44 UTC] [INFO] thumbnails: 0 new, 14 already present
+[2026-11-08 15:44 UTC] [INFO] Snapshot: 14 short(s) on disk before push.
+[2026-11-08 15:44 UTC] [INFO] Pushing shorts + captions + thumbnails + logs + state to GitHub...
