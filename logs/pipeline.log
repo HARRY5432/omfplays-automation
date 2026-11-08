@@ -517,3 +517,6 @@ hint: Disable this message with "git config set advice.addIgnoredFile false"
 [2026-11-08 12:11 UTC] [INFO] thumbnails: 0 new, 0 already present
 [2026-11-08 12:11 UTC] [INFO] Snapshot: 0 short(s) on disk before push.
 [2026-11-08 12:11 UTC] [INFO] Pushing shorts + captions + thumbnails + logs + state to GitHub...
+[2026-11-08 12:11 UTC] [INFO] Pushed 0 short(s) + sidecars to GitHub.
+[2026-11-08 12:11 UTC] [INFO] Dashboard written to F:\✈Content Engine\omfplays\webapp\dashboard.html
+[2026-11-08 12:11 UTC] [INFO] === Startup Pipeline Finished ===

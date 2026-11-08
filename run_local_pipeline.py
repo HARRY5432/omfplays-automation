@@ -545,6 +545,7 @@ def run_pipeline(cfg: dict, dry_run: bool, no_push: bool) -> dict:
     steps: dict[str, str] = {}
     daily_shorts = int(cfg.get("daily_shorts", 5))
     started = datetime.now(ps.IST)
+    any_work_done = False
 
     raw_before = ps.raw_counts()
     shorts_before = len(ps.pending_shorts())
@@ -556,7 +557,7 @@ def run_pipeline(cfg: dict, dry_run: bool, no_push: bool) -> dict:
         f"shorts waiting: {shorts_before}"
     )
 
-    # Print startup summary to console (no Telegram spam)
+    # Print startup summary to console (no Telegram spam) — ALWAYS shown on login
     print_startup_summary(cfg)
 
     # ── Step 1: build missing shorts ──
@@ -567,6 +568,7 @@ def run_pipeline(cfg: dict, dry_run: bool, no_push: bool) -> dict:
         need = max(0, daily_shorts - existing)
         if need > 0:
             log(f"Building {need} missing short(s) for today...")
+            before_build = len(list(SHORTS_DIR.glob("s*.mp4")))
             rc = run_step(
                 "build",
                 "build_shorts_omf.py",
@@ -574,7 +576,10 @@ def run_pipeline(cfg: dict, dry_run: bool, no_push: bool) -> dict:
                 retries=int(cfg.get("step_retries", 2)),
                 delay=int(cfg.get("step_retry_delay_sec", 15)),
             )
+            after_build = len(list(SHORTS_DIR.glob("s*.mp4")))
             steps["build"] = "ok" if rc == 0 else "failed"
+            if rc == 0 and after_build > before_build:
+                any_work_done = True
         else:
             log(f"Already {existing} shorts waiting (daily cap {daily_shorts}). Skipping build.")
             steps["build"] = "skipped (enough shorts)"
@@ -583,16 +588,23 @@ def run_pipeline(cfg: dict, dry_run: bool, no_push: bool) -> dict:
     if dry_run:
         steps["meta"] = "skipped (dry run)"
     else:
-        log("Generating OpenRouter captions for shorts missing .txt...")
-        rc = run_step(
-            "meta",
-            "generate_meta.py",
-            retries=int(cfg.get("step_retries", 2)),
-            delay=int(cfg.get("step_retry_delay_sec", 10)),
-        )
-        steps["meta"] = "ok" if rc == 0 else "failed"
-        if rc != 0:
-            log("Meta step failed — shorts will have fallback captions on next run.", "WARN")
+        shorts_on_disk = len(list(SHORTS_DIR.glob("s*.mp4")))
+        if shorts_on_disk == 0:
+            log("No shorts on disk — skipping OpenRouter captions.")
+            steps["meta"] = "skipped (no shorts on disk)"
+        else:
+            log("Generating OpenRouter captions for shorts missing .txt...")
+            rc = run_step(
+                "meta",
+                "generate_meta.py",
+                retries=int(cfg.get("step_retries", 2)),
+                delay=int(cfg.get("step_retry_delay_sec", 10)),
+            )
+            steps["meta"] = "ok" if rc == 0 else "failed"
+            if rc == 0:
+                any_work_done = True
+            if rc != 0:
+                log("Meta step failed — shorts will have fallback captions on next run.", "WARN")
 
     # ── Step 3: generate HD thumbnails ──
     if dry_run:
@@ -600,8 +612,10 @@ def run_pipeline(cfg: dict, dry_run: bool, no_push: bool) -> dict:
     else:
         log("Generating HD thumbnails for shorts missing .jpg...")
         try:
-            generate_thumbnails()
+            made = generate_thumbnails()
             steps["thumbnails"] = "ok"
+            if made > 0:
+                any_work_done = True
         except Exception as e:
             log(f"Thumbnail step crashed: {e}", "ERROR")
             steps["thumbnails"] = "failed"
@@ -614,10 +628,11 @@ def run_pipeline(cfg: dict, dry_run: bool, no_push: bool) -> dict:
         push_ok, pushed_stems = git_push_changes(cfg)
         steps["push"] = "ok" if push_ok else "failed"
         if push_ok and pushed_stems:
+            any_work_done = True
             log("Step 4b: cleaning local copies after successful GitHub push...")
             cleanup_pushed_short(pushed_stems)
             steps["cleanup"] = "ok"
-        elif push_ok:
+        elif push_ok and not pushed_stems:
             steps["cleanup"] = "skipped (nothing to clean)"
         else:
             steps["cleanup"] = "skipped (push failed)"
@@ -639,6 +654,8 @@ def run_pipeline(cfg: dict, dry_run: bool, no_push: bool) -> dict:
         "steps": steps,
     }
     log("=== Startup Pipeline Finished ===")
+    if not any_work_done:
+        print("✅ Today's processing is complete. Nothing new to do.", flush=True)
     return stats
 
 
