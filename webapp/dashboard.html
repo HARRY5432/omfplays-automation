@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='UTF-8'>
+<meta name='viewport' content='width=device-width, initial-scale=1.0'>
+<title>omfplays Dashboard</title>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0b0c10; color: #c5c6c7; padding: 20px; }
+h1 { color: #66fcf1; margin-bottom: 16px; }
+.card { background: #1f2833; border: 1px solid #45a29e; border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+.card h2 { color: #66fcf1; font-size: 16px; margin-bottom: 8px; }
+.row { display: flex; gap: 16px; flex-wrap: wrap; }
+.stat { flex: 1; min-width: 120px; background: #0e1521; padding: 10px; border-radius: 6px; }
+.stat .val { font-size: 20px; font-weight: bold; color: #45a29e; }
+.stat .lbl { font-size: 12px; color: #7d8a99; }
+pre { background: #0e1521; padding: 12px; border-radius: 6px; overflow-x: auto; font-size: 13px; }
+.slot { margin: 6px 0; padding: 6px 10px; background: #0e1521; border-radius: 4px; }
+.slot.posted { border-left: 4px solid #45a29e; }
+.slot.due { border-left: 4px solid #f9c74f; }
+.slot.missed { border-left: 4px solid #ff6b6b; }
+.slot.scheduled { border-left: 4px solid #6c757d; }
+.updated { color: #7d8a99; font-size: 12px; margin-top: 16px; }
+</style>
+</head>
+<body>
+<h1>⚡ omfplays Dashboard</h1>
+<p>Last updated: 2026-11-08 17:28 IST</p>
+<div class='row'>
+<div class='stat'><div class='val'>0</div><div class='lbl'>slots posted today</div></div>
+<div class='stat'><div class='val'>4</div><div class='lbl'>shorts waiting</div></div>
+<div class='stat'><div class='val'>8</div><div class='lbl'>manifest total</div></div>
+<div class='stat'><div class='val'>6.0</div><div class='lbl'>GB disk free</div></div>
+</div>
+<div class='card'>
+<h2>📅 Today's Slots</h2>
+<div class='slot missed'>✖ 10:00 IST — 448m overdue · owner GITHUB</div>
+<div class='slot due'>⏳ 14:00 IST — due now · owner GITHUB</div>
+<div class='slot due'>⏳ 17:00 IST — due now · owner GITHUB</div>
+<div class='slot scheduled'>· 20:00 IST — owner GITHUB</div>
+<div class='slot scheduled'>· 23:00 IST — owner GITHUB</div>
+</div>
+<div class='card'>
+<h2>📜 Recent Logs</h2>
+<pre>
+[2026-11-08 04:01 UTC] [INFO] Shorts + captions + state pushed to GitHub.
+[2026-11-08 04:01 UTC] [INFO] === Local Pipeline Finished ===
+[2026-11-08 04:01 UTC] [INFO] Node status recorded (ok).
+[2026-11-08 04:05 UTC] [INFO] Lock acquired: F:\✈Content Engine\omfplays\state\pipeline.lock (pid 8264)
+[2026-11-08 04:05 UTC] [INFO] === Local Pipeline Started ===
+[2026-11-08 04:05 UTC] [INFO] Raw: 3 video(s) · 7 reels sliced · 97 reels of 40s left · shorts waiting: 4
+[2026-11-08 04:06 UTC] [INFO] Building shorts (daily cap: 5)...
+[2026-11-08 04:06 UTC] [INFO] RUN [build] attempt 1/2: build_shorts_omf.py
+[2026-11-08 04:06 UTC] [INFO] [build] ok
+[2026-11-08 04:06 UTC] [INFO] Generating captions via OpenRouter...
+[2026-11-08 04:06 UTC] [INFO] RUN [meta] attempt 1/2: generate_meta.py
+[2026-11-08 04:06 UTC] [INFO] [meta] ok
+[2026-11-08 04:06 UTC] [INFO] No slots due for this node right now.
+[2026-11-08 04:06 UTC] [INFO] RUN [cleanup] attempt 1/1: cleanup_shorts.py
+[2026-11-08 04:06 UTC] [INFO] [cleanup] ok
+[2026-11-08 04:06 UTC] [INFO] Pushing pending shorts + captions + state to GitHub...
+[2026-11-08 04:06 UTC] [INFO] Shorts + captions + state pushed to GitHub.
+[2026-11-08 04:06 UTC] [INFO] === Local Pipeline Finished ===
+[2026-11-08 04:06 UTC] [INFO] Node status recorded (ok).
+[2026-11-08 04:57 UTC] [INFO] Lock acquired: F:\✈Content Engine\omfplays\state\pipeline.lock (pid 13824)
+[2026-11-08 04:57 UTC] [INFO] === Local Pipeline Started ===
+[2026-11-08 04:57 UTC] [INFO] Raw: 3 video(s) · 7 reels sliced · 97 reels of 40s left · shorts waiting: 4
+[2026-11-08 04:57 UTC] [INFO] Building shorts (daily cap: 5)...
+[2026-11-08 04:57 UTC] [INFO] RUN [build] attempt 1/2: build_shorts_omf.py
+[2026-11-08 04:57 UTC] [INFO] [build] ok
+[2026-11-08 04:57 UTC] [INFO] Generating captions via OpenRouter...
+[2026-11-08 04:57 UTC] [INFO] RUN [meta] attempt 1/2: generate_meta.py
+[2026-11-08 04:57 UTC] [INFO] [meta] ok
+[2026-11-08 04:57 UTC] [INFO] No slots due for this node right now.
+[2026-11-08 04:57 UTC] [INFO] RUN [cleanup] attempt 1/1: cleanup_shorts.py
+[2026-11-08 04:57 UTC] [INFO] [cleanup] ok
+[2026-11-08 04:57 UTC] [INFO] Pushing pending shorts + captions + state to GitHub...
+[2026-11-08 04:57 UTC] [INFO] Shorts + captions + state pushed to GitHub.
+[2026-11-08 11:58 UTC] [INFO] Lock acquired: F:\✈Content Engine\omfplays\state\pipeline.lock (pid 9288)
+[2026-11-08 11:58 UTC] [INFO] === Startup Pipeline Started ===
+[2026-11-08 11:58 UTC] [INFO] Raw: 3 video(s) · 97 reels left · shorts waiting: 4
+[2026-11-08 11:58 UTC] [INFO] Building 1 missing short(s) for today...
+[2026-11-08 11:58 UTC] [INFO] RUN [build] attempt 1/2: build_shorts_omf.py --max-shorts 1
+[2026-11-08 11:58 UTC] [INFO] [build] ok
+[2026-11-08 11:58 UTC] [INFO] Generating OpenRouter captions for shorts missing .txt...
+[2026-11-08 11:58 UTC] [INFO] RUN [meta] attempt 1/2: generate_meta.py 
+[2026-11-08 11:58 UTC] [INFO] [meta] ok
+[2026-11-08 11:58 UTC] [INFO] Generating HD thumbnails for shorts missing .jpg...
+[2026-11-08 11:58 UTC] [INFO] thumbnails: 0 new, 4 already present
+[2026-11-08 11:58 UTC] [INFO] Snapshot: 4 short(s) on disk before push.
+[2026-11-08 11:58 UTC] [INFO] Pushing shorts + captions + thumbnails + logs + state to GitHub...
+[2026-11-08 11:58 UTC] [WARN] git add failed: The following paths are ignored by one of your .gitignore files:
+logs
+hint: Use -f if you really want to add them.
+hint: Disable this message with &quot;git config set advice.addIgnoredFile false&quot;
+</pre>
+</div>
+<div class='card'>
+<h2>📂 Raw Library</h2>
+<p>Raw videos: 3 | Reels left: 97</p>
+</div>
+<p class='updated'>Generated by omfplays local pipeline. Push this file to GitHub and Cloudflare Pages will redeploy.</p>
+</body>
+</html>
