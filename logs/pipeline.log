@@ -503,3 +503,17 @@ hint: Disable this message with "git config set advice.addIgnoredFile false"
 [2026-11-08 12:10 UTC] [INFO] thumbnails: 0 new, 0 already present
 [2026-11-08 12:10 UTC] [INFO] Snapshot: 0 short(s) on disk before push.
 [2026-11-08 12:10 UTC] [INFO] Pushing shorts + captions + thumbnails + logs + state to GitHub...
+[2026-11-08 12:10 UTC] [INFO] Pushed 0 short(s) + sidecars to GitHub.
+[2026-11-08 12:10 UTC] [INFO] Dashboard written to F:\✈Content Engine\omfplays\webapp\dashboard.html
+[2026-11-08 12:10 UTC] [INFO] === Startup Pipeline Finished ===
+[2026-11-08 12:11 UTC] [INFO] Lock acquired: F:\✈Content Engine\omfplays\state\pipeline.lock (pid 5908)
+[2026-11-08 12:11 UTC] [INFO] === Startup Pipeline Started ===
+[2026-11-08 12:11 UTC] [INFO] Raw: 3 video(s) · 97 reels left · shorts waiting: 0
+[2026-11-08 12:11 UTC] [INFO] Building 5 missing short(s) for today...
+[2026-11-08 12:11 UTC] [INFO] RUN [build] attempt 1/2: build_shorts_omf.py --max-shorts 5
+[2026-11-08 12:11 UTC] [INFO] [build] ok
+[2026-11-08 12:11 UTC] [INFO] No shorts on disk — skipping OpenRouter captions.
+[2026-11-08 12:11 UTC] [INFO] Generating HD thumbnails for shorts missing .jpg...
+[2026-11-08 12:11 UTC] [INFO] thumbnails: 0 new, 0 already present
+[2026-11-08 12:11 UTC] [INFO] Snapshot: 0 short(s) on disk before push.
+[2026-11-08 12:11 UTC] [INFO] Pushing shorts + captions + thumbnails + logs + state to GitHub...
