@@ -586,3 +586,41 @@ hint: Disable this message with "git config set advice.addIgnoredFile false"
 [2026-11-08 15:44 UTC] [INFO] thumbnails: 0 new, 14 already present
 [2026-11-08 15:44 UTC] [INFO] Snapshot: 14 short(s) on disk before push.
 [2026-11-08 15:44 UTC] [INFO] Pushing shorts + captions + thumbnails + logs + state to GitHub...
+[2026-11-08 15:46 UTC] [ERROR] FATAL: Command '['git', 'push']' timed out after 120 seconds
+Traceback (most recent call last):
+  File "F:\✈Content Engine\omfplays\run_local_pipeline.py", line 733, in main
+    stats = run_pipeline(cfg, args.dry_run, args.no_push)
+  File "F:\✈Content Engine\omfplays\run_local_pipeline.py", line 621, in run_pipeline
+    push_ok, pushed_stems = git_push_changes(cfg)
+                            ~~~~~~~~~~~~~~~~^^^^^
+  File "F:\✈Content Engine\omfplays\run_local_pipeline.py", line 350, in git_push_changes
+    push = _git("push")
+  File "F:\✈Content Engine\omfplays\run_local_pipeline.py", line 290, in _git
+    return subprocess.run(
+           ~~~~~~~~~~~~~~^
+        ["git", *args], cwd=str(HERE), capture_output=True, text=True, timeout=120
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\admin\AppData\Local\Programs\Python\Python313\Lib\subprocess.py", line 556, in run
+    stdout, stderr = process.communicate(input, timeout=timeout)
+                     ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\admin\AppData\Local\Programs\Python\Python313\Lib\subprocess.py", line 1222, in communicate
+    stdout, stderr = self._communicate(input, endtime, timeout)
+                     ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\admin\AppData\Local\Programs\Python\Python313\Lib\subprocess.py", line 1665, in _communicate
+    raise TimeoutExpired(self.args, orig_timeout)
+subprocess.TimeoutExpired: Command '['git', 'push']' timed out after 120 seconds
+
+[2026-11-08 16:39 UTC] [INFO] Lock acquired: F:\✈Content Engine\omfplays\state\pipeline.lock (pid 13032)
+[2026-11-08 16:39 UTC] [INFO] === Startup Pipeline Started ===
+[2026-11-08 16:39 UTC] [INFO] Raw: 3 video(s) · 103 reels left · shorts waiting: 14
+[2026-11-08 16:39 UTC] [INFO] Already 14 shorts waiting (daily cap 5). Skipping build.
+[2026-11-08 16:39 UTC] [INFO] Generating OpenRouter captions for shorts missing .txt...
+[2026-11-08 16:39 UTC] [INFO] RUN [meta] attempt 1/2: generate_meta.py 
+[2026-11-08 16:39 UTC] [INFO] [meta] ok
+[2026-11-08 16:39 UTC] [INFO] Generating HD thumbnails for shorts missing .jpg...
+[2026-11-08 16:39 UTC] [INFO] thumbnails: 0 new, 14 already present
+[2026-11-08 16:39 UTC] [INFO] Snapshot: 14 short(s) on disk before push.
+[2026-11-08 16:39 UTC] [INFO] Pushing shorts + captions + thumbnails + logs + state to GitHub...
+[2026-11-08 16:39 UTC] [WARN] git pull --rebase failed: fatal: unable to access 'https://github.com/HARRY5432/omfplays-automation.git/': Failed to connect to github.com port 443 after 21732 ms: Could not connect to server
