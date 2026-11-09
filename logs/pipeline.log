@@ -757,3 +757,35 @@ subprocess.TimeoutExpired: Command '['git', 'push']' timed out after 120 seconds
 [2026-11-09 07:26 UTC] [INFO] thumbnails: 0 new, 14 already present
 [2026-11-09 07:26 UTC] [INFO] Snapshot: 14 short(s) on disk before push.
 [2026-11-09 07:26 UTC] [INFO] Pushing shorts + captions + thumbnails + logs + state to GitHub...
+[2026-11-09 07:26 UTC] [INFO] Pushed 14 short(s) + sidecars to GitHub.
+[2026-11-09 08:05 UTC] [INFO]   pushed: s20261108_001.mp4 + .txt + .jpg
+[2026-11-09 08:05 UTC] [INFO]   pushed: s20261108_002.mp4 + .txt + .jpg
+[2026-11-09 08:05 UTC] [INFO]   pushed: s20261108_003.mp4 + .txt + .jpg
+[2026-11-09 08:05 UTC] [INFO]   pushed: s20261108_005.mp4 + .txt + .jpg
+[2026-11-09 08:05 UTC] [INFO]   pushed: s20261108_006.mp4 + .txt + .jpg
+[2026-11-09 08:05 UTC] [INFO]   pushed: s20261108_007.mp4 + .txt + .jpg
+[2026-11-09 08:05 UTC] [INFO]   pushed: s20261108_008.mp4 + .txt + .jpg
+[2026-11-09 08:05 UTC] [INFO]   pushed: s20261108_009.mp4 + .txt + .jpg
+[2026-11-09 08:05 UTC] [INFO]   pushed: s20261108_010.mp4 + .txt + .jpg
+[2026-11-09 08:05 UTC] [INFO]   pushed: s20261108_011.mp4 + .txt + .jpg
+[2026-11-09 08:05 UTC] [INFO]   pushed: s20261108_012.mp4 + .txt + .jpg
+[2026-11-09 08:05 UTC] [INFO]   pushed: s20261108_013.mp4 + .txt + .jpg
+[2026-11-09 08:05 UTC] [INFO]   pushed: s20261108_014.mp4 + .txt + .jpg
+[2026-11-09 08:05 UTC] [INFO]   pushed: s20261108_015.mp4 + .txt + .jpg
+[2026-11-09 08:05 UTC] [INFO] Kept 14 short(s) on disk for GitHub node Instagram upload.
+[2026-11-09 08:05 UTC] [INFO] Push successful — shutting down PC (task-bound runtime complete)...
+[2026-11-09 08:05 UTC] [INFO] PC shutdown initiated.
+[2026-11-09 08:06 UTC] [WARN] Removing stale lock: pid 12364 is not running
+[2026-11-09 08:06 UTC] [INFO] Lock acquired: F:\✈Content Engine\omfplays\state\pipeline.lock (pid 13032)
+[2026-11-09 11:12 UTC] [WARN] Removing stale lock: pid 13032 is not running
+[2026-11-09 11:12 UTC] [INFO] Lock acquired: F:\✈Content Engine\omfplays\state\pipeline.lock (pid 3244)
+[2026-11-09 11:12 UTC] [INFO] === Startup Pipeline Started ===
+[2026-11-09 11:12 UTC] [INFO] Raw: 3 video(s) · 103 reels left · shorts waiting: 14
+[2026-11-09 11:12 UTC] [INFO] Already 14 shorts waiting (daily cap 5). Skipping build.
+[2026-11-09 11:12 UTC] [INFO] Generating OpenRouter captions for shorts missing .txt...
+[2026-11-09 11:12 UTC] [INFO] RUN [meta] attempt 1/2: generate_meta.py 
+[2026-11-09 11:13 UTC] [INFO] [meta] ok
+[2026-11-09 11:13 UTC] [INFO] Generating HD thumbnails for shorts missing .jpg...
+[2026-11-09 11:13 UTC] [INFO] thumbnails: 0 new, 14 already present
+[2026-11-09 11:13 UTC] [INFO] Snapshot: 14 short(s) on disk before push.
+[2026-11-09 11:13 UTC] [INFO] Pushing shorts + captions + thumbnails + logs + state to GitHub...
