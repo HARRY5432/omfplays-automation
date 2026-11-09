@@ -624,3 +624,16 @@ subprocess.TimeoutExpired: Command '['git', 'push']' timed out after 120 seconds
 [2026-11-08 16:39 UTC] [INFO] Snapshot: 14 short(s) on disk before push.
 [2026-11-08 16:39 UTC] [INFO] Pushing shorts + captions + thumbnails + logs + state to GitHub...
 [2026-11-08 16:39 UTC] [WARN] git pull --rebase failed: fatal: unable to access 'https://github.com/HARRY5432/omfplays-automation.git/': Failed to connect to github.com port 443 after 21732 ms: Could not connect to server
+[2026-11-08 16:40 UTC] [WARN] git push failed (attempt 1): fatal: unable to access 'https://github.com/HARRY5432/omfplays-automation.git/': Failed to connect to github.com port 443 after 21591 ms: Could not connect to server
+[2026-11-09 07:15 UTC] [WARN] Removing stale lock: pid 13032 is not running
+[2026-11-09 07:15 UTC] [INFO] Lock acquired: F:\✈Content Engine\omfplays\state\pipeline.lock (pid 12376)
+[2026-11-09 07:16 UTC] [INFO] === Startup Pipeline Started ===
+[2026-11-09 07:16 UTC] [INFO] Raw: 3 video(s) · 103 reels left · shorts waiting: 14
+[2026-11-09 07:16 UTC] [INFO] Already 14 shorts waiting (daily cap 5). Skipping build.
+[2026-11-09 07:16 UTC] [INFO] Generating OpenRouter captions for shorts missing .txt...
+[2026-11-09 07:16 UTC] [INFO] RUN [meta] attempt 1/2: generate_meta.py 
+[2026-11-09 07:16 UTC] [INFO] [meta] ok
+[2026-11-09 07:16 UTC] [INFO] Generating HD thumbnails for shorts missing .jpg...
+[2026-11-09 07:16 UTC] [INFO] thumbnails: 0 new, 14 already present
+[2026-11-09 07:16 UTC] [INFO] Snapshot: 14 short(s) on disk before push.
+[2026-11-09 07:16 UTC] [INFO] Pushing shorts + captions + thumbnails + logs + state to GitHub...
