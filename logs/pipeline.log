@@ -1,0 +1,18 @@
+[2026-11-14 17:40 UTC] [INFO] Lock acquired: F:\✈Content Engine\omfplays\state\pipeline.lock (pid 12568)
+[2026-11-14 17:41 UTC] [INFO] === Startup Pipeline Started ===
+[2026-11-14 17:41 UTC] [INFO] Raw: 3 video(s) · 104 reels left · shorts waiting: 0
+[2026-11-14 17:41 UTC] [INFO] Building 5 missing short(s) for today...
+[2026-11-14 17:41 UTC] [INFO] RUN [build] attempt 1/2: build_shorts_omf.py --max-shorts 5
+[2026-11-14 17:49 UTC] [INFO] [build] ok
+[2026-11-14 17:49 UTC] [INFO] Generating OpenRouter captions for shorts missing .txt...
+[2026-11-14 17:49 UTC] [INFO] RUN [meta] attempt 1/2: generate_meta.py 
+[2026-11-14 17:49 UTC] [INFO] [meta] ok
+[2026-11-14 17:49 UTC] [INFO] Generating HD thumbnails for shorts missing .jpg...
+[2026-11-14 17:49 UTC] [INFO] thumbnail: s20261114_001.jpg
+[2026-11-14 17:49 UTC] [INFO] thumbnail: s20261114_002.jpg
+[2026-11-14 17:49 UTC] [INFO] thumbnail: s20261114_003.jpg
+[2026-11-14 17:49 UTC] [INFO] thumbnail: s20261114_004.jpg
+[2026-11-14 17:49 UTC] [INFO] thumbnail: s20261114_005.jpg
+[2026-11-14 17:49 UTC] [INFO] thumbnails: 5 new, 0 already present
+[2026-11-14 17:49 UTC] [INFO] Snapshot: 5 short(s) on disk before push.
+[2026-11-14 17:49 UTC] [INFO] Pushing shorts + captions + thumbnails + logs + state to GitHub...
