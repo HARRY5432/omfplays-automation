@@ -47,6 +47,7 @@ UPLOADS_PATH = STATE_DIR / "uploads.json"
 CONFIG_PATH = HERE / "config.json"
 PIPELINE_LOG = LOGS_DIR / "pipeline.log"
 DASHBOARD_PATH = HERE / "webapp" / "dashboard.html"
+HEARTBEAT_PATH = STATE_DIR / "bot_heartbeat.json"
 
 for _stream in (sys.stdout, sys.stderr):
     try:
@@ -360,49 +361,7 @@ def git_push_changes(cfg: dict) -> tuple[bool, list[str]]:
     return False, []
 
 
-def cleanup_pushed_short(stems: list[str]) -> None:
-    """Delete local .mp4/.txt/.jpg for shorts that were pushed to GitHub.
-    Records each cleaned file in state/pushed.json so we always know what is
-    on GitHub vs what is still on disk."""
-    pushed_log_path = STATE_DIR / "pushed.json"
-    try:
-        pushed_log = json.loads(pushed_log_path.read_text(encoding="utf-8"))
-    except Exception:
-        pushed_log = {}
-
-    now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    cleaned = []
-    already_gone = []
-
-    for stem in stems:
-        pushed_log[stem] = {
-            "pushed_at": now_iso,
-            "cleaned_from_disk": True,
-        }
-        for ext in (".mp4", ".txt", ".jpg"):
-            f = SHORTS_DIR / f"{stem}{ext}"
-            if not f.exists():
-                already_gone.append(f"{stem}{ext}")
-                continue
-            try:
-                size = f.stat().st_size
-                f.unlink()
-                cleaned.append(f"{stem}{ext}")
-                log(f"cleaned: {f.name} ({size / 1024 / 1024:.1f} MB)")
-            except Exception as e:
-                log(f"could not clean {f.name}: {e}", "WARN")
-
-    pushed_log_path.parent.mkdir(parents=True, exist_ok=True)
-    pushed_log_path.write_text(
-        json.dumps(pushed_log, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
-
-    log(f"cleanup: {len(cleaned)} file(s) removed from disk after GitHub push.")
-    if already_gone:
-        log(f"cleanup: {len(already_gone)} file(s) already absent (skipped).")
-
-
-# ═════════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════════
 # DASHBOARD
 # ════════════════════════════════════════════════════════════════════════════════
 
@@ -499,7 +458,59 @@ def write_dashboard() -> None:
         log(f"Could not write dashboard: {e}", "WARN")
 
 
-# ════════════════════════════════════════════════════════════════════════════════
+def write_audit_log(raw_videos: list, shorts_built: int, shorts_pushed: list,
+                    shorts_on_disk: list, manifest_entries: int) -> None:
+    """Write audit log tracking raw footage processing — what was downloaded,
+    processed, sliced, pushed, and what remains on disk. Auditable trail."""
+    AUDIT_LOG_PATH = STATE_DIR / "audit_log.json"
+    try:
+        try:
+            audit_history = json.loads(AUDIT_LOG_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            audit_history = []
+
+    except Exception:
+        audit_history = []
+
+    now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    entry = {
+        "timestamp": now_iso,
+        "raw_videos_on_disk": len(raw_videos),
+        "raw_video_names": [v.name for v in raw_videos],
+        "manifest_entries_total": manifest_entries,
+        "shorts_built_this_run": shorts_built,
+        "shorts_pushed_to_github": shorts_pushed,
+        "shorts_on_disk_after_run": shorts_on_disk,
+    }
+    audit_history.append(entry)
+
+    AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    AUDIT_LOG_PATH.write_text(
+        json.dumps(audit_history, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    log(f"Audit log written: {shorts_built} shorts built, {len(shorts_pushed)} pushed to GitHub, "
+        f"{len(shorts_on_disk)} shorts remaining on disk.", "INFO")
+
+
+def write_heartbeat(online: bool = True) -> None:
+    """Write bot heartbeat so Telegram knows if PC is online."""
+    try:
+        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        entry = {
+            "last_heartbeat": now_iso,
+            "pc_online": online,
+            "node": NODE,
+        }
+        HEARTBEAT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        HEARTBEAT_PATH.write_text(
+            json.dumps(entry, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+    except Exception as e:
+        log(f"Could not write heartbeat: {e}", "WARN")
+
+
+# ═════════════════════════════════════════════════════════════════════════════════
 # STARTUP SUMMARY
 # ════════════════════════════════════════════════════════════════════════════════
 
@@ -556,6 +567,9 @@ def run_pipeline(cfg: dict, dry_run: bool, no_push: bool) -> dict:
         f"Raw: {raw_before['total']} video(s) · {raw_before['slices_left']} reels left · "
         f"shorts waiting: {shorts_before}"
     )
+
+    # Write heartbeat: PC is online
+    write_heartbeat(online=True)
 
     # Print startup summary to console (no Telegram spam) — ALWAYS shown on login
     print_startup_summary(cfg)
@@ -622,6 +636,7 @@ def run_pipeline(cfg: dict, dry_run: bool, no_push: bool) -> dict:
 
     # ── Step 4: push to GitHub (logs + state + shorts + dashboard) ──
     pushed_stems: list[str] = []
+    push_ok = False
     if dry_run or no_push:
         steps["push"] = "skipped"
     else:
@@ -629,13 +644,11 @@ def run_pipeline(cfg: dict, dry_run: bool, no_push: bool) -> dict:
         steps["push"] = "ok" if push_ok else "failed"
         if push_ok and pushed_stems:
             any_work_done = True
-            log("Step 4b: cleaning local copies after successful GitHub push...")
-            cleanup_pushed_short(pushed_stems)
-            steps["cleanup"] = "ok"
+            log(f"Kept {len(pushed_stems)} short(s) on disk for GitHub node Instagram upload.")
         elif push_ok and not pushed_stems:
-            steps["cleanup"] = "skipped (nothing to clean)"
+            log("Push succeeded — no new shorts were on disk.")
         else:
-            steps["cleanup"] = "skipped (push failed)"
+            steps["push"] = "failed"
 
     # ── Step 5: write dashboard ──
     if not dry_run:
@@ -643,6 +656,40 @@ def run_pipeline(cfg: dict, dry_run: bool, no_push: bool) -> dict:
 
     after = ps.raw_counts()
     waiting = len(ps.pending_shorts())
+    shorts_built_this_run = max(0, waiting - shorts_before)
+
+    # Gather raw video info for audit
+    raw_videos_on_disk = []
+    RAW_DIR_LOCAL = HERE / "raw"
+    if RAW_DIR_LOCAL.exists():
+        raw_videos_on_disk = [
+            f for f in RAW_DIR_LOCAL.iterdir()
+            if f.is_file() and f.suffix.lower() in {".mp4", ".mov", ".mkv", ".avi", ".mxf", ".ts", ".webm", ".m4v"}
+        ]
+
+    # Count manifest entries
+    manifest_entries = 0
+    try:
+        import json as _json
+        manifest_path = SHORTS_DIR / "manifest.json"
+        if manifest_path.exists():
+            manifest_data = _json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest_entries = len(manifest_data) if isinstance(manifest_data, list) else 0
+    except Exception:
+        manifest_entries = 0
+
+    # Shorts on disk after run
+    shorts_on_disk = [p.stem for p in SHORTS_DIR.glob("s*.mp4")]
+
+    # Write audit log
+    write_audit_log(
+        raw_videos=raw_videos_on_disk,
+        shorts_built=shorts_built_this_run,
+        shorts_pushed=pushed_stems,
+        shorts_on_disk=shorts_on_disk,
+        manifest_entries=manifest_entries,
+    )
+
     stats = {
         "node": NODE.upper(),
         "started": started.strftime("%Y-%m-%d %H:%M IST"),
@@ -712,6 +759,7 @@ def main() -> int:
         log(f"FATAL: {e}\n{traceback.format_exc()}", "ERROR")
     finally:
         lock.release()
+        write_heartbeat(online=False)
         if stats:
             print(render_summary(stats), flush=True)
             try:

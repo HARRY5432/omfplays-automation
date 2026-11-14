@@ -1,25 +1,25 @@
 name: Night Upload & Ops
 
-# GitHub owns the four night slots (see slots.json); the local PC owns 08:30.
-# Ownership is enforced in upload_shorts.py, so a stray run can never
-# double-post a slot the other node already published.
+# GitHub owns all five slots (see slots.json); the local PC never uploads to Instagram.
+# Local PC only builds shorts + captions + thumbnails, pushes to GitHub, then shuts down.
+# GitHub node pulls, uploads due shorts to Instagram at each Option A slot, commits state.
 on:
   schedule:
-    - cron: '0 14 * * *'    # 19:30 IST
-    - cron: '0 17 * * *'    # 22:30 IST
-    - cron: '30 19 * * *'   # 01:00 IST (next day)
-    - cron: '30 23 * * *'   # 05:00 IST (next day)
+    - cron: '0 22 * * *'   # Slot 1: EST 5 PM — Pre-peak
+    - cron: '0 23 * * *'   # Slot 2: EST 6 PM — Early evening
+    - cron: '0 0 * * *'    # Slot 3: EST 7 PM — Prime time start
+    - cron: '0 1 * * *'    # Slot 4: EST 8 PM — Prime time peak
+    - cron: '0 2 * * *'    # Slot 5: EST 9 PM — Late peak
   workflow_dispatch:
     inputs:
       mode:
         description: 'What to run'
         required: false
-        default: 'status'
+        default: 'upload'
         type: choice
         options:
-          - status
           - upload
-          - debug
+          - status
           - cleanup
 
 concurrency:
@@ -31,12 +31,12 @@ permissions:
 
 env:
   PYTHON_VERSION: '3.11'
-  TZ: 'Asia/Kolkata'
+  TZ: 'UTC'
   PIPELINE_NODE: github
   PYTHONUNBUFFERED: '1'
 
 jobs:
-  night-ops:
+  night-upload:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -103,34 +103,27 @@ jobs:
 
       - name: Repo state
         run: |
-          echo "mode: ${MODE:-status}"
-          ls -la shorts/ 2>/dev/null | head -20 || echo "no shorts/ folder"
-          ls -la state/ 2>/dev/null || echo "no state/ folder"
+          echo "Slot: ${{ github.event.schedule || 'manual' }}"
+          ls -la shorts/ 2>/dev/null | head -30 || echo "no shorts/ folder"
           du -sh shorts 2>/dev/null || true
-        env:
-          MODE: ${{ github.event.inputs.mode || 'status' }}
 
       - name: Report node status (start)
-        run: python pipeline_status.py --start --note "workflow ${{ github.event.inputs.mode || 'schedule' }}" --notify --quiet || true
+        run: python pipeline_status.py --start --note "night upload ${{ github.event.schedule || 'manual' }}" --notify --quiet || true
 
-      - name: Run pipeline
+      - name: Upload due shorts to Instagram
         id: run
         env:
-          MODE: ${{ github.event.inputs.mode || 'status' }}
+          MODE: ${{ github.event.inputs.mode || 'upload' }}
         run: |
-          MODE="${MODE:-status}"
+          MODE="${MODE:-upload}"
           case "$MODE" in
             upload)
-              echo "posting every due slot owned by github"
+              echo "Posting every due slot owned by github at Option A time"
               python upload_shorts.py || echo "::warning::upload step exited non-zero"
               python cleanup_shorts.py || true
               ;;
             cleanup)
               python cleanup_shorts.py
-              ;;
-            debug)
-              python debug_login.py || true
-              python upload_shorts.py --dry-run || true
               ;;
             status|*)
               python pipeline_status.py
@@ -146,7 +139,7 @@ jobs:
           if git diff --staged --quiet; then
             echo "no repository changes"
           else
-            git commit -m "chore(github): night ops $(date -u +'%Y-%m-%d %H:%M UTC')"
+            git commit -m "chore(github): night upload $(date -u +'%Y-%m-%d %H:%M UTC')"
             for attempt in 1 2 3; do
               if git push; then echo "pushed"; break; fi
               echo "push failed (attempt $attempt) — rebasing and retrying"
