@@ -142,3 +142,24 @@
 [2026-11-16 04:21 UTC] [INFO] thumbnails: 0 new, 5 already present
 [2026-11-16 04:21 UTC] [INFO] Snapshot: 5 short(s) on disk before push.
 [2026-11-16 04:21 UTC] [INFO] Pushing shorts + captions + thumbnails + logs + state to GitHub...
+[2026-11-16 04:21 UTC] [INFO] Pushed 5 short(s) + sidecars to GitHub.
+[2026-11-16 04:21 UTC] [INFO]   pushed: s20261114_001.mp4 + .txt + .jpg
+[2026-11-16 04:21 UTC] [INFO]   pushed: s20261114_002.mp4 + .txt + .jpg
+[2026-11-16 04:21 UTC] [INFO]   pushed: s20261114_003.mp4 + .txt + .jpg
+[2026-11-16 04:21 UTC] [INFO]   pushed: s20261114_004.mp4 + .txt + .jpg
+[2026-11-16 04:21 UTC] [INFO]   pushed: s20261114_005.mp4 + .txt + .jpg
+[2026-11-16 04:21 UTC] [INFO] Kept 5 short(s) on disk for GitHub node Instagram upload.
+[2026-11-16 04:22 UTC] [INFO] Dashboard written to F:\✈Content Engine\omfplays\webapp\dashboard.html
+[2026-11-16 04:22 UTC] [INFO] Audit log written: 0 shorts built, 5 pushed to GitHub, 5 shorts remaining on disk.
+[2026-11-16 04:22 UTC] [INFO] === Startup Pipeline Finished ===
+[2026-11-16 04:37 UTC] [INFO] Lock acquired: F:\✈Content Engine\omfplays\state\pipeline.lock (pid 12732)
+[2026-11-16 04:37 UTC] [INFO] === Startup Pipeline Started ===
+[2026-11-16 04:37 UTC] [INFO] Raw: 3 video(s) · 99 reels left · shorts waiting: 5
+[2026-11-16 04:38 UTC] [INFO] Already 5 shorts waiting (daily cap 5). Skipping build.
+[2026-11-16 04:38 UTC] [INFO] Generating OpenRouter captions for shorts missing .txt...
+[2026-11-16 04:38 UTC] [INFO] RUN [meta] attempt 1/2: generate_meta.py 
+[2026-11-16 04:38 UTC] [INFO] [meta] ok
+[2026-11-16 04:38 UTC] [INFO] Generating HD thumbnails for shorts missing .jpg...
+[2026-11-16 04:38 UTC] [INFO] thumbnails: 0 new, 5 already present
+[2026-11-16 04:38 UTC] [INFO] Snapshot: 5 short(s) on disk before push.
+[2026-11-16 04:38 UTC] [INFO] Pushing shorts + captions + thumbnails + logs + state to GitHub...
