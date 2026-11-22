@@ -12,13 +12,13 @@
     "last_posted": 0
   },
   "github": {
-    "runs": 36,
+    "runs": 37,
     "total_built": 0,
     "total_posted": 0,
-    "last_run_utc": "2026-11-22T02:46:35+00:00",
-    "state": "running",
-    "last_result": "running",
-    "last_note": "night upload 0 23 * * *",
+    "last_run_utc": "2026-11-22T02:46:38+00:00",
+    "state": "success",
+    "last_result": "success",
+    "last_note": "schedule",
     "host": "ip-10-0-133-145",
     "last_built": 0,
     "last_posted": 0
